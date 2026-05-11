@@ -137,7 +137,7 @@ public class McpToolRegistrar {
         McpSchema.Tool tool = new McpSchema.Tool(
             "memory_profile",
             "Project profile: total observations, top files, concepts, patterns",
-            "{}"
+            "{\"type\":\"object\",\"properties\":{}}"
         );
         return new McpServerFeatures.SyncToolSpecification(tool, (exchange, args) -> {
             try {
@@ -197,7 +197,7 @@ public class McpToolRegistrar {
         McpSchema.Tool tool = new McpSchema.Tool(
             "memory_patterns",
             "Detect recurring patterns from memory tags and tool usage",
-            "{}"
+            "{\"type\":\"object\",\"properties\":{}}"
         );
         return new McpServerFeatures.SyncToolSpecification(tool, (exchange, args) -> {
             try {

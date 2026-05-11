@@ -8,6 +8,7 @@ import co.elastic.clients.elasticsearch._types.SortOrder;
 import com.agentmemory.config.MemoryProperties;
 import com.agentmemory.model.MemorySearchRequest;
 import com.agentmemory.model.MemoryTier;
+import com.agentmemory.model.QueryExpander;
 import com.agentmemory.model.SearchResult;
 import com.agentmemory.model.SessionRecord;
 import org.slf4j.Logger;
@@ -28,10 +29,12 @@ public class ElasticsearchService {
 
     private final ElasticsearchClient client;
     private final MemoryProperties props;
+    private final DashScopeService dashScopeService;
 
-    public ElasticsearchService(ElasticsearchClient client, MemoryProperties props) {
+    public ElasticsearchService(ElasticsearchClient client, MemoryProperties props, DashScopeService dashScopeService) {
         this.client = client;
         this.props = props;
+        this.dashScopeService = dashScopeService;
     }
 
     public void saveObservation(Map<String, Object> doc, String id) throws IOException {
@@ -56,24 +59,32 @@ public class ElasticsearchService {
             return List.of();
         }
 
-        // BM25 search
+        // Enhanced BM25 search
         List<Hit<Map<String, Object>>> bm25Hits = bm25Search(req);
-        // Vector search
-        List<Hit<Map<String, Object>>> vectorHits = vectorSearch(req, queryVector);
+
+        // Vector search — only if real embedding is available
+        List<Hit<Map<String, Object>>> vectorHits = List.<Hit<Map<String, Object>>>of();
+        boolean useVector = dashScopeService != null && dashScopeService.isRealEmbeddingAvailable();
+        if (useVector && queryVector != null && queryVector.length > 0) {
+            vectorHits = vectorSearch(req, queryVector);
+        }
 
         // RRF fusion
         Map<String, Double> rrfScores = new LinkedHashMap<>();
         Map<String, Hit<Map<String, Object>>> allHits = new LinkedHashMap<>();
 
+        int bm25K = useVector ? props.getRrfK() : 10; // Higher BM25 weight when no vector
+        int vectorK = props.getRrfK();
+
         for (int i = 0; i < bm25Hits.size(); i++) {
             String id = bm25Hits.get(i).id();
-            double score = 1.0 / (props.getRrfK() + i + 1);
+            double score = 1.0 / (bm25K + i + 1);
             rrfScores.merge(id, score, Double::sum);
             allHits.putIfAbsent(id, bm25Hits.get(i));
         }
         for (int i = 0; i < vectorHits.size(); i++) {
             String id = vectorHits.get(i).id();
-            double score = 1.0 / (props.getRrfK() + i + 1);
+            double score = 1.0 / (vectorK + i + 1);
             rrfScores.merge(id, score, Double::sum);
             allHits.putIfAbsent(id, vectorHits.get(i));
         }
@@ -104,18 +115,53 @@ public class ElasticsearchService {
     }
 
     private List<Hit<Map<String, Object>>> bm25Search(MemorySearchRequest req) throws IOException {
+        // Query expansion: tokenize, filter stop words
+        var expanded = QueryExpander.expand(req.query());
+
         SearchResponse<Map> response = client.search(s -> {
             var q = s.index(OBS_INDEX)
                 .size(props.getTopKBm25())
                 .source(src -> src.filter(f -> f.excludes("embedding")))
                 .query(bq -> bq.bool(boolQ -> {
-                    boolQ.must(m -> m.match(mt -> mt.field("content").query(req.query())));
+                    // Multi-match: content (boost=2.0) + tags (boost=1.5) + toolName (boost=1.0)
+                    boolQ.should(m -> m.multiMatch(mm -> mm
+                        .fields(List.of("content^2.0", "tags^1.5", "toolName^1.0"))
+                        .query(req.query())
+                        .type(co.elastic.clients.elasticsearch._types.query_dsl.TextQueryType.BestFields)
+                    ));
+
+                    // Individual keyword matches (OR logic for keywords)
+                    if (!expanded.normalizedQuery().isBlank()) {
+                        for (String keyword : expanded.normalizedQuery().split(" ")) {
+                            if (keyword.length() > 1) {
+                                boolQ.should(m -> m.match(mt -> mt
+                                    .field("content")
+                                    .query(keyword)
+                                ));
+                            }
+                        }
+                    }
+
+                    // Phrase match for quoted phrases
+                    for (String phrase : expanded.phrases()) {
+                        if (!phrase.isBlank()) {
+                            boolQ.should(m -> m.matchPhrase(mp -> mp
+                                .field("content")
+                                .query(phrase)
+                            ));
+                        }
+                    }
+
+                    // Filters
                     if (req.sessionId() != null) {
                         boolQ.filter(f -> f.term(t -> t.field("sessionId").value(req.sessionId())));
                     }
                     if (req.filePath() != null) {
                         boolQ.filter(f -> f.term(t -> t.field("filePath.keyword").value(req.filePath())));
                     }
+
+                    // Minimum should match at least one clause
+                    boolQ.minimumShouldMatch("1");
                     return boolQ;
                 }));
             return q;

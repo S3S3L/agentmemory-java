@@ -84,7 +84,7 @@ public class StdioMcpServer {
 
         // Services
         DashScopeService dashScopeService = new DashScopeService(dsConfig);
-        ElasticsearchService esService = new ElasticsearchService(esClient, memProps);
+        ElasticsearchService esService = new ElasticsearchService(esClient, memProps, dashScopeService);
         MemoryPipelineService pipeline = new MemoryPipelineService(esService, dashScopeService, memProps);
 
         // Consolidation (scheduled tasks) - start in background

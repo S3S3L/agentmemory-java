@@ -21,6 +21,7 @@ public class DashScopeService {
     private final DashScopeConfig config;
     private final OkHttpClient httpClient;
     private final ObjectMapper mapper;
+    private final boolean realEmbeddingAvailable;
 
     public DashScopeService(DashScopeConfig config) {
         this.config = config;
@@ -29,6 +30,15 @@ public class DashScopeService {
             .readTimeout(60, TimeUnit.SECONDS)
             .build();
         this.mapper = new ObjectMapper();
+        this.realEmbeddingAvailable = config.getApiKey() != null && !config.getApiKey().isBlank();
+    }
+
+    /**
+     * Returns true if DashScope API key is configured and embedding calls
+     * will use the real API (not fallback).
+     */
+    public boolean isRealEmbeddingAvailable() {
+        return realEmbeddingAvailable;
     }
 
     public float[] embed(String text) {

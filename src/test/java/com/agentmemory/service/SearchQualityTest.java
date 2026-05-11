@@ -44,10 +44,11 @@ class SearchQualityTest {
         var dsConfig = new DashScopeConfig();
         dsConfig.setApiKey("");
         dsConfig.setEmbeddingDimensions(1024);
+        var dsService = new DashScopeService(dsConfig);
         var props = new MemoryProperties();
 
-        esService = new ElasticsearchService(esClient, props);
-        pipeline = new MemoryPipelineService(esService, new DashScopeService(dsConfig), props);
+        esService = new ElasticsearchService(esClient, props, dsService);
+        pipeline = new MemoryPipelineService(esService, dsService, props);
     }
 
     @Test
