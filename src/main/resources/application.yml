@@ -1,0 +1,37 @@
+server:
+  port: 40080
+
+spring:
+  application:
+    name: agentmemory
+
+# Elasticsearch
+elasticsearch:
+  host: localhost
+  port: 9200
+  scheme: http
+
+# DashScope
+dashscope:
+  api-key: ${DASHSCOPE_API_KEY:}
+  embedding:
+    model: text-embedding-v4
+    dimensions: 1024
+  rerank:
+    model: gte-rerank
+
+# Memory
+memory:
+  token-budget: 2000
+  dedup-window-minutes: 5
+  rrf-k: 60
+  max-results-per-session: 3
+  top-k-bm25: 20
+  top-k-vector: 20
+  top-k-final: 10
+  consolidation:
+    enabled: true
+    cron: "0 0 */6 * * *"
+  decay:
+    enabled: true
+    cron: "0 0 2 * * *"

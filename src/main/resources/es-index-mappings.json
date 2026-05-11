@@ -1,0 +1,43 @@
+{
+  "settings": {
+    "number_of_shards": 1,
+    "number_of_replicas": 0,
+    "index": {
+      "max_result_window": 10000
+    }
+  },
+  "mappings": {
+    "properties": {
+      "id": { "type": "keyword" },
+      "content": {
+        "type": "text",
+        "analyzer": "standard",
+        "fields": {
+          "keyword": { "type": "keyword", "ignore_above": 256 }
+        }
+      },
+      "embedding": {
+        "type": "dense_vector",
+        "dims": 1024,
+        "index": true,
+        "similarity": "cosine"
+      },
+      "tier": { "type": "keyword" },
+      "sessionId": { "type": "keyword" },
+      "toolName": { "type": "keyword" },
+      "filePath": {
+        "type": "text",
+        "fields": {
+          "keyword": { "type": "keyword", "ignore_above": 512 }
+        }
+      },
+      "timestamp": { "type": "date" },
+      "metadata": { "type": "object", "enabled": false },
+      "tags": { "type": "keyword" },
+      "supersededBy": { "type": "keyword" },
+      "isActive": { "type": "boolean" },
+      "accessCount": { "type": "integer" },
+      "lastAccessed": { "type": "date" }
+    }
+  }
+}
