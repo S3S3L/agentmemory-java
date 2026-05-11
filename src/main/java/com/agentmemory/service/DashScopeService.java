@@ -33,7 +33,10 @@ public class DashScopeService {
 
     public float[] embed(String text) {
         if (text == null || text.isBlank()) {
-            return new float[config.getEmbeddingDimensions()];
+            return fallbackEmbed(text != null ? text : "");
+        }
+        if (config.getApiKey() == null || config.getApiKey().isBlank()) {
+            return fallbackEmbed(text);
         }
 
         try {
@@ -51,7 +54,7 @@ public class DashScopeService {
             try (Response response = httpClient.newCall(request).execute()) {
                 if (!response.isSuccessful()) {
                     log.warn("DashScope embedding failed: {} {}", response.code(), response.body() != null ? response.body().string() : "");
-                    return new float[config.getEmbeddingDimensions()];
+                    return fallbackEmbed(text);
                 }
                 JsonNode root = mapper.readTree(response.body().string());
                 JsonNode embedding = root.path("output").path("embeddings").get(0).path("embedding");
@@ -62,8 +65,8 @@ public class DashScopeService {
                 return vec;
             }
         } catch (Exception e) {
-            log.error("DashScope embedding error", e);
-            return new float[config.getEmbeddingDimensions()];
+            log.warn("DashScope embedding error, using fallback: {}", e.getMessage());
+            return fallbackEmbed(text);
         }
     }
 
@@ -107,4 +110,29 @@ public class DashScopeService {
     }
 
     public record RerankResult(int index, double score) {}
+
+    /**
+     * Generate a deterministic non-zero embedding from text hash.
+     * Used when DashScope API is unavailable. Produces a unit vector
+     * so cosine similarity is valid.
+     */
+    private float[] fallbackEmbed(String text) {
+        int dim = config.getEmbeddingDimensions();
+        float[] vec = new float[dim];
+        int hash = text.hashCode();
+        // Fill with deterministic pseudo-random values from hash
+        long seed = hash;
+        for (int i = 0; i < dim; i++) {
+            seed = (seed * 6364136223846793005L + 1) & Long.MAX_VALUE;
+            vec[i] = ((seed & 0xFFFF) / 32768.0f) - 1.0f;
+        }
+        // Normalize to unit vector so cosine similarity works
+        float norm = 0;
+        for (float v : vec) norm += v * v;
+        norm = (float) Math.sqrt(norm);
+        if (norm > 0) {
+            for (int i = 0; i < dim; i++) vec[i] /= norm;
+        }
+        return vec;
+    }
 }

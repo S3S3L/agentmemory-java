@@ -8,11 +8,12 @@ import org.elasticsearch.client.RestClient;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.boot.ApplicationArguments;
+import org.springframework.boot.ApplicationRunner;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.core.io.ClassPathResource;
 
-import jakarta.annotation.PostConstruct;
 import java.io.IOException;
 
 @Configuration
@@ -43,12 +44,13 @@ public class ElasticsearchConfig {
         );
     }
 
-    @PostConstruct
-    public void initIndices() throws IOException {
-        var client = elasticsearchClient(restClient());
-        initIndex(client, "memory-observations");
-        initIndex(client, "memory-consolidated");
-        initIndex(client, "memory-sessions");
+    @Bean
+    public ApplicationRunner indexInitializer(ElasticsearchClient client) {
+        return (ApplicationArguments args) -> {
+            initIndex(client, "memory-observations");
+            initIndex(client, "memory-consolidated");
+            initIndex(client, "memory-sessions");
+        };
     }
 
     private void initIndex(ElasticsearchClient client, String indexName) throws IOException {
