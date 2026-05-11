@@ -22,4 +22,9 @@ public class DashScopeConfig {
     public String getEmbeddingModel() { return embeddingModel; }
     public int getEmbeddingDimensions() { return embeddingDimensions; }
     public String getRerankModel() { return rerankModel; }
+
+    public void setApiKey(String apiKey) { this.apiKey = apiKey; }
+    public void setEmbeddingModel(String embeddingModel) { this.embeddingModel = embeddingModel; }
+    public void setEmbeddingDimensions(int embeddingDimensions) { this.embeddingDimensions = embeddingDimensions; }
+    public void setRerankModel(String rerankModel) { this.rerankModel = rerankModel; }
 }

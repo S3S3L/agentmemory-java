@@ -13,6 +13,9 @@ import java.time.Duration;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.*;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 
 /**
@@ -29,9 +32,34 @@ public class MemoryConsolidationService {
     private static final String OBS_INDEX = "memory-observations";
 
     private final ElasticsearchClient esClient;
+    private ScheduledExecutorService scheduler;
 
     public MemoryConsolidationService(ElasticsearchClient esClient) {
         this.esClient = esClient;
+    }
+
+    /**
+     * Start background consolidation/decay scheduler for non-Spring usage.
+     * Call this from StdioMcpServer or other standalone entry points.
+     */
+    public void startScheduler() {
+        scheduler = Executors.newScheduledThreadPool(2, r -> {
+            Thread t = new Thread(r, "memory-consolidation");
+            t.setDaemon(true);
+            return t;
+        });
+        // Consolidate every 6 hours
+        scheduler.scheduleAtFixedRate(this::consolidate, 0, 6, TimeUnit.HOURS);
+        // Decay sweep daily at ~2am (approximate: 2 hours after start, then every 24h)
+        scheduler.scheduleAtFixedRate(this::applyDecay, 2, 24, TimeUnit.HOURS);
+        log.info("Memory consolidation scheduler started");
+    }
+
+    public void stopScheduler() {
+        if (scheduler != null && !scheduler.isShutdown()) {
+            scheduler.shutdownNow();
+            log.info("Memory consolidation scheduler stopped");
+        }
     }
 
     @Scheduled(cron = "${memory.consolidation.cron:0 0 */6 * * *}")
