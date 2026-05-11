@@ -6,6 +6,9 @@ import co.elastic.clients.transport.rest_client.RestClientTransport;
 import com.agentmemory.config.DashScopeConfig;
 import com.agentmemory.config.MemoryProperties;
 import com.agentmemory.model.*;
+import com.fasterxml.jackson.databind.DeserializationFeature;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import org.apache.http.HttpHost;
 import org.elasticsearch.client.RestClient;
 import org.junit.jupiter.api.*;
@@ -24,6 +27,7 @@ class MemoryPipelineIntegrationTest {
 
     private MemoryPipelineService pipeline;
     private ElasticsearchService esService;
+    private ElasticsearchClient esClient;
 
     @BeforeAll
     static void checkES() throws Exception {
@@ -37,8 +41,11 @@ class MemoryPipelineIntegrationTest {
     @BeforeEach
     void setUp() throws Exception {
         var restClient = RestClient.builder(new HttpHost("localhost", 9200, "http")).build();
-        var esClient = new ElasticsearchClient(
-            new RestClientTransport(restClient, new JacksonJsonpMapper()));
+        var localMapper = new ObjectMapper();
+        localMapper.registerModule(new JavaTimeModule());
+        localMapper.configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false);
+        esClient = new ElasticsearchClient(
+            new RestClientTransport(restClient, new JacksonJsonpMapper(localMapper)));
 
         var dsConfig = new DashScopeConfig();
         dsConfig.setApiKey("");
@@ -72,9 +79,10 @@ class MemoryPipelineIntegrationTest {
 
     @Test
     @Order(3)
-    void recall_returnsResults() throws IOException {
+    void recall_returnsResults() throws IOException, InterruptedException {
         pipeline.observe("Edit", "database index optimization", "Created index", "db/schema.sql", "recall-test");
         pipeline.observe("Read", "user authentication flow", "Auth middleware", "src/auth.ts", "recall-test");
+        esClient.indices().refresh(r -> r.index("memory-observations"));
 
         var results = pipeline.recall("database", null, null);
         assertFalse(results.isEmpty(), "Should find database-related observations");
@@ -82,8 +90,9 @@ class MemoryPipelineIntegrationTest {
 
     @Test
     @Order(4)
-    void recall_filtersByQuery() throws IOException {
+    void recall_filtersByQuery() throws IOException, InterruptedException {
         pipeline.observe("Write", "frontend CSS styles", "Added flexbox layout", "src/styles.css", "recall-filter");
+        esClient.indices().refresh(r -> r.index("memory-observations"));
 
         var dbResults = pipeline.recall("database optimization", null, null);
         var cssResults = pipeline.recall("frontend CSS", null, null);
@@ -104,7 +113,9 @@ class MemoryPipelineIntegrationTest {
 
     @Test
     @Order(6)
-    void search_returnsScoredResults() throws IOException {
+    void search_returnsScoredResults() throws IOException, InterruptedException {
+        // Data seeded by earlier tests — need refresh
+        esClient.indices().refresh(r -> r.index("memory-observations"));
         var req = new MemorySearchRequest("authentication", null, null, null, 10, null);
         float[] vector = new DashScopeService(new DashScopeConfig() {{
             setApiKey(""); setEmbeddingDimensions(1024);
@@ -121,9 +132,8 @@ class MemoryPipelineIntegrationTest {
     @Order(7)
     void fileHistory_returnsObservationsForFile() throws IOException, InterruptedException {
         pipeline.observe("Read", "test file observation 1", "output1", "src/specific.rs", "fh-test");
-        Thread.sleep(200);
         pipeline.observe("Write", "test file observation 2", "output2", "src/specific.rs", "fh-test");
-        Thread.sleep(500);
+        esClient.indices().refresh(r -> r.index("memory-observations"));
 
         var results = esService.getObservationsByFile("src/specific.rs", 10);
         assertTrue(results.size() >= 2);
@@ -139,6 +149,7 @@ class MemoryPipelineIntegrationTest {
     @Test
     @Order(9)
     void getProfile_returnsTotalCount() throws IOException {
+        esClient.indices().refresh(r -> r.index("memory-observations"));
         var profile = esService.getProfile();
         assertNotNull(profile.get("totalObservations"));
         assertTrue((Long) profile.get("totalObservations") > 0);
@@ -187,7 +198,7 @@ class MemoryPipelineIntegrationTest {
         }
 
         esService.batchSave(docs, ids);
-        Thread.sleep(500);
+        esClient.indices().refresh(r -> r.index("memory-observations"));
 
         var results = esService.getObservationsByFile("src/batch.txt", 10);
         assertTrue(results.size() >= 5);

@@ -50,9 +50,15 @@ public class DashScopeService {
         }
 
         try {
-            String json = mapper.writeValueAsString(mapper.createObjectNode()
-                .put("model", config.getEmbeddingModel())
-                .put("input", mapper.valueToTree(List.of(text))));
+            var rootNode = mapper.createObjectNode();
+            rootNode.put("model", config.getEmbeddingModel());
+            var inputNode = mapper.createObjectNode();
+            inputNode.set("texts", mapper.valueToTree(List.of(text)));
+            rootNode.set("input", inputNode);
+            var paramsNode = mapper.createObjectNode();
+            paramsNode.put("text_type", "query");
+            rootNode.set("parameters", paramsNode);
+            String json = mapper.writeValueAsString(rootNode);
 
             Request request = new Request.Builder()
                 .url(EMBEDDING_URL)
@@ -86,10 +92,12 @@ public class DashScopeService {
         }
 
         try {
-            var payload = mapper.createObjectNode()
-                .put("model", config.getRerankModel())
-                .put("query", query)
-                .put("documents", mapper.valueToTree(documents));
+            var inputNode = mapper.createObjectNode();
+            inputNode.put("query", query);
+            inputNode.set("documents", mapper.valueToTree(documents));
+            var payload = mapper.createObjectNode();
+            payload.put("model", config.getRerankModel());
+            payload.set("input", inputNode);
 
             Request request = new Request.Builder()
                 .url(RERANK_URL)
@@ -100,7 +108,7 @@ public class DashScopeService {
 
             try (Response response = httpClient.newCall(request).execute()) {
                 if (!response.isSuccessful()) {
-                    log.warn("DashScope rerank failed: {}", response.code());
+                    log.warn("DashScope rerank failed: {} {}", response.code(), response.body() != null ? response.body().string() : "");
                     return List.of();
                 }
                 JsonNode root = mapper.readTree(response.body().string());

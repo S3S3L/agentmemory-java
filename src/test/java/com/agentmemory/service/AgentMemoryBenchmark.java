@@ -67,10 +67,19 @@ class AgentMemoryBenchmark {
             new RestClientTransport(restClient, new JacksonJsonpMapper(localMapper)));
 
         var dsConfig = new DashScopeConfig();
-        dsConfig.setApiKey("");
+        String apiKey = System.getenv("DASHSCOPE_API_KEY");
+        dsConfig.setApiKey(apiKey != null && !apiKey.isBlank() ? apiKey : "");
+        dsConfig.setEmbeddingModel("text-embedding-v4");
         dsConfig.setEmbeddingDimensions(1024);
+        dsConfig.setRerankModel("gte-rerank");
         var dsService = new DashScopeService(dsConfig);
         var props = new MemoryProperties();
+
+        if (dsService.isRealEmbeddingAvailable()) {
+            System.out.println("Using REAL DashScope embedding (API key configured)");
+        } else {
+            System.out.println("Using FALLBACK embedding (no API key)");
+        }
 
         esService = new ElasticsearchService(esClient, props, dsService);
         pipeline = new MemoryPipelineService(esService, dsService, props);
@@ -100,19 +109,34 @@ class AgentMemoryBenchmark {
     }
 
     /**
-     * Seed all 240 observations into Elasticsearch.
+     * Seed all 240 observations into Elasticsearch with real embeddings.
      */
     @Test
     @Order(2)
     void seedObservations() throws IOException, InterruptedException {
         if (observations == null) loadBenchmarkDataset();
 
-        // Clear existing data first (delete index and recreate would be cleaner but let's just add)
+        // Remove existing benchmark observations by their known IDs
+        for (JsonNode obs : observations) {
+            String obsId = obs.get("id").asText();
+            try {
+                esClient.delete(d -> d.index(OBS_INDEX).id(obsId));
+            } catch (Exception e) { /* may not exist */ }
+        }
+
         int seeded = 0;
         for (JsonNode obs : observations) {
+            String content = buildContent(obs);
+
+            // Generate embedding for this observation
+            float[] embedding = esService.getDashScopeService().embed(content);
+            List<Double> embeddingList = new ArrayList<>(embedding.length);
+            for (float v : embedding) embeddingList.add((double) v);
+
             Map<String, Object> doc = new LinkedHashMap<>();
             doc.put("id", obs.get("id").asText());
-            doc.put("content", buildContent(obs));
+            doc.put("content", content);
+            doc.put("embedding", embeddingList);
             doc.put("tier", "WORKING");
             doc.put("sessionId", obs.get("sessionId").asText());
             doc.put("toolName", obs.get("type").asText());
@@ -124,7 +148,6 @@ class AgentMemoryBenchmark {
             doc.put("accessCount", 0);
             doc.put("lastAccessed", null);
 
-            // Use the original observation ID
             esClient.index(i -> i
                 .index(OBS_INDEX)
                 .id(obs.get("id").asText())
@@ -134,7 +157,7 @@ class AgentMemoryBenchmark {
 
         // Wait for ES to refresh
         Thread.sleep(1000);
-        System.out.println("Seeded " + seeded + " observations");
+        System.out.println("Seeded " + seeded + " observations with embeddings");
         assertTrue(seeded >= 240, "Should have seeded at least 240 observations");
     }
 

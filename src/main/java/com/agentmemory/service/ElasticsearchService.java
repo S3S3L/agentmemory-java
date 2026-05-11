@@ -37,6 +37,8 @@ public class ElasticsearchService {
         this.dashScopeService = dashScopeService;
     }
 
+    public DashScopeService getDashScopeService() { return dashScopeService; }
+
     public void saveObservation(Map<String, Object> doc, String id) throws IOException {
         client.index(i -> i
             .index(OBS_INDEX)
@@ -115,55 +117,11 @@ public class ElasticsearchService {
     }
 
     private List<Hit<Map<String, Object>>> bm25Search(MemorySearchRequest req) throws IOException {
-        // Query expansion: tokenize, filter stop words
-        var expanded = QueryExpander.expand(req.query());
-
         SearchResponse<Map> response = client.search(s -> {
             var q = s.index(OBS_INDEX)
                 .size(props.getTopKBm25())
                 .source(src -> src.filter(f -> f.excludes("embedding")))
-                .query(bq -> bq.bool(boolQ -> {
-                    // Multi-match: content (boost=2.0) + tags (boost=1.5) + toolName (boost=1.0)
-                    boolQ.should(m -> m.multiMatch(mm -> mm
-                        .fields(List.of("content^2.0", "tags^1.5", "toolName^1.0"))
-                        .query(req.query())
-                        .type(co.elastic.clients.elasticsearch._types.query_dsl.TextQueryType.BestFields)
-                    ));
-
-                    // Individual keyword matches (OR logic for keywords)
-                    if (!expanded.normalizedQuery().isBlank()) {
-                        for (String keyword : expanded.normalizedQuery().split(" ")) {
-                            if (keyword.length() > 1) {
-                                boolQ.should(m -> m.match(mt -> mt
-                                    .field("content")
-                                    .query(keyword)
-                                ));
-                            }
-                        }
-                    }
-
-                    // Phrase match for quoted phrases
-                    for (String phrase : expanded.phrases()) {
-                        if (!phrase.isBlank()) {
-                            boolQ.should(m -> m.matchPhrase(mp -> mp
-                                .field("content")
-                                .query(phrase)
-                            ));
-                        }
-                    }
-
-                    // Filters
-                    if (req.sessionId() != null) {
-                        boolQ.filter(f -> f.term(t -> t.field("sessionId").value(req.sessionId())));
-                    }
-                    if (req.filePath() != null) {
-                        boolQ.filter(f -> f.term(t -> t.field("filePath.keyword").value(req.filePath())));
-                    }
-
-                    // Minimum should match at least one clause
-                    boolQ.minimumShouldMatch("1");
-                    return boolQ;
-                }));
+                .query(qb -> qb.match(m -> m.field("content").query(req.query())));
             return q;
         }, Map.class);
 
