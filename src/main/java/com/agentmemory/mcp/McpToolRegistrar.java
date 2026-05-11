@@ -2,6 +2,7 @@ package com.agentmemory.mcp;
 
 import com.agentmemory.model.MemoryTier;
 import com.agentmemory.model.SearchResult;
+import com.agentmemory.model.TokenBudget;
 import com.agentmemory.service.ElasticsearchService;
 import com.agentmemory.service.MemoryPipelineService;
 import io.modelcontextprotocol.server.McpServerFeatures;
@@ -47,15 +48,16 @@ public class McpToolRegistrar {
         McpSchema.Tool tool = new McpSchema.Tool(
             "memory_recall",
             "Search past memory observations with hybrid BM25 + vector + rerank",
-            "{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\",\"description\":\"Search query\"},\"projectId\":{\"type\":\"string\"},\"sessionId\":{\"type\":\"string\"}},\"required\":[\"query\"]}"
+            "{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\",\"description\":\"Search query\"},\"projectId\":{\"type\":\"string\"},\"sessionId\":{\"type\":\"string\"},\"tokenBudget\":{\"type\":\"integer\",\"default\":2000,\"description\":\"Max tokens for response\"}},\"required\":[\"query\"]}"
         );
         return new McpServerFeatures.SyncToolSpecification(tool, (exchange, args) -> {
             String query = (String) args.get("query");
             String projectId = (String) args.get("projectId");
             String sessionId = (String) args.get("sessionId");
+            int tokenBudget = args.containsKey("tokenBudget") ? ((Number) args.get("tokenBudget")).intValue() : 2000;
             try {
                 List<SearchResult> results = pipeline.recall(query, projectId, sessionId);
-                String text = formatResults(results);
+                String text = TokenBudget.formatWithRerank(results, tokenBudget);
                 return new McpSchema.CallToolResult(List.of(new McpSchema.TextContent(text)), false);
             } catch (Exception e) {
                 log.error("memory_recall failed", e);
@@ -207,21 +209,6 @@ public class McpToolRegistrar {
                 return errorResult("Patterns failed: " + e.getMessage());
             }
         });
-    }
-
-    private String formatResults(List<SearchResult> results) {
-        if (results.isEmpty()) return "No matching memories found.";
-        StringBuilder sb = new StringBuilder("Found ").append(results.size()).append(" relevant memories:\n\n");
-        for (int i = 0; i < results.size(); i++) {
-            var r = results.get(i);
-            sb.append("## Memory ").append(i + 1).append(" [").append(r.tier()).append("]\n");
-            sb.append("- Score: ").append(String.format("%.3f", r.score())).append("\n");
-            if (r.sessionId() != null) sb.append("- Session: ").append(r.sessionId()).append("\n");
-            if (r.toolName() != null) sb.append("- Tool: ").append(r.toolName()).append("\n");
-            if (r.filePath() != null) sb.append("- File: ").append(r.filePath()).append("\n");
-            sb.append("- Content:\n").append(r.content()).append("\n\n");
-        }
-        return sb.toString();
     }
 
     private McpSchema.CallToolResult errorResult(String message) {
