@@ -243,8 +243,8 @@ public class ElasticsearchService {
         SearchResponse<Void> response = client.search(s -> s
             .index(OBS_INDEX)
             .size(0)
-            .aggregations("tool_usage", a -> a.terms(t -> t.field("toolName").size(20)))
-            .aggregations("top_tags", a -> a.terms(t -> t.field("tags").size(20))),
+            .aggregations("tool_usage", a -> a.terms(t -> t.field("toolName.keyword").size(20)))
+            .aggregations("top_tags", a -> a.terms(t -> t.field("tags.keyword").size(20))),
             Void.class
         );
         return Map.of("aggregations", response.aggregations());
