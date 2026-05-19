@@ -70,15 +70,16 @@ public class McpToolRegistrar {
         McpSchema.Tool tool = new McpSchema.Tool(
             "memory_save",
             "Save an insight, decision, or pattern to long-term memory",
-            "{\"type\":\"object\",\"properties\":{\"content\":{\"type\":\"string\"},\"tier\":{\"type\":\"string\",\"enum\":[\"WORKING\",\"EPISODIC\",\"SEMANTIC\",\"PROCEDURAL\"]},\"tags\":{\"type\":\"array\",\"items\":{\"type\":\"string\"}},\"sessionId\":{\"type\":\"string\"}},\"required\":[\"content\"]}"
+            "{\"type\":\"object\",\"properties\":{\"content\":{\"type\":\"string\"},\"tier\":{\"type\":\"string\",\"enum\":[\"WORKING\",\"EPISODIC\",\"SEMANTIC\",\"PROCEDURAL\"]},\"tags\":{\"type\":\"array\",\"items\":{\"type\":\"string\"}},\"sessionId\":{\"type\":\"string\"},\"projectId\":{\"type\":\"string\"}},\"required\":[\"content\"]}"
         );
         return new McpServerFeatures.SyncToolSpecification(tool, (exchange, args) -> {
             String content = (String) args.get("content");
             String tierStr = (String) args.getOrDefault("tier", "SEMANTIC");
             String sessionId = (String) args.get("sessionId");
             List<String> tags = (List<String>) args.get("tags");
+            String projectId = (String) args.get("projectId");
             try {
-                var result = pipeline.saveInsight(content, MemoryTier.valueOf(tierStr), sessionId, tags);
+                var result = pipeline.saveInsight(content, MemoryTier.valueOf(tierStr), sessionId, tags, projectId);
                 return new McpSchema.CallToolResult(
                     List.of(new McpSchema.TextContent("Saved insight to memory. ID: " + result.get("id"))), false);
             } catch (Exception e) {

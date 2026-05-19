@@ -30,8 +30,9 @@ public class MemoryController {
         String output = (String) body.get("output");
         String filePath = (String) body.get("filePath");
         String sessionId = (String) body.get("sessionId");
+        String projectId = (String) body.get("projectId");
 
-        var result = pipelineService.observe(tool, input, output, filePath, sessionId);
+        var result = pipelineService.observe(tool, input, output, filePath, sessionId, projectId);
         return ResponseEntity.ok(result);
     }
 
@@ -52,8 +53,9 @@ public class MemoryController {
         String sessionId = (String) body.get("sessionId");
         @SuppressWarnings("unchecked")
         List<String> tags = (List<String>) body.get("tags");
+        String projectId = (String) body.get("projectId");
 
-        var result = pipelineService.saveInsight(content, MemoryTier.valueOf(tierStr), sessionId, tags);
+        var result = pipelineService.saveInsight(content, MemoryTier.valueOf(tierStr), sessionId, tags, projectId);
         return ResponseEntity.ok(Map.of("status", "saved", "id", result.get("id")));
     }
 
@@ -115,6 +117,11 @@ public class MemoryController {
     public ResponseEntity<?> patterns() throws IOException {
         var patterns = esService.getPatternAggregations();
         return ResponseEntity.ok(Map.of("patterns", patterns));
+    }
+
+    @GetMapping("/metrics/project")
+    public ResponseEntity<?> projectMetrics(@RequestParam(required = false) String projectId) throws IOException {
+        return ResponseEntity.ok(esService.getProjectMetrics(projectId));
     }
 
     @DeleteMapping("/{id}")

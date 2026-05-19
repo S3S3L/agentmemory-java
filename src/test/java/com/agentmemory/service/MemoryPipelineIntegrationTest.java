@@ -25,6 +25,8 @@ import static org.junit.jupiter.api.Assertions.*;
 @TestMethodOrder(MethodOrderer.OrderAnnotation.class)
 class MemoryPipelineIntegrationTest {
 
+    private static final String OBS_INDEX = "integration-observations";
+
     private MemoryPipelineService pipeline;
     private ElasticsearchService esService;
     private ElasticsearchClient esClient;
@@ -35,6 +37,15 @@ class MemoryPipelineIntegrationTest {
             var esClient = new ElasticsearchClient(
                 new RestClientTransport(client, new JacksonJsonpMapper()));
             assertTrue(esClient.ping().value(), "Elasticsearch must be running on localhost:9200");
+        }
+    }
+
+    @AfterAll
+    static void cleanup() throws Exception {
+        try (var client = RestClient.builder(new HttpHost("localhost", 9200, "http")).build()) {
+            var esClient = new ElasticsearchClient(
+                new RestClientTransport(client, new JacksonJsonpMapper()));
+            esClient.indices().delete(d -> d.index(OBS_INDEX).ignoreUnavailable(true));
         }
     }
 
@@ -54,14 +65,14 @@ class MemoryPipelineIntegrationTest {
 
         var props = new MemoryProperties();
 
-        esService = new ElasticsearchService(esClient, props, dsService);
+        esService = new ElasticsearchService(esClient, props, dsService, OBS_INDEX);
         pipeline = new MemoryPipelineService(esService, dsService, props);
     }
 
     @Test
     @Order(1)
     void observe_createsRecord() throws IOException {
-        var result = pipeline.observe("Read", "test input", "test output", "src/test.txt", "integration-test");
+        var result = pipeline.observe("Read", "test input", "test output", "src/test.txt", "integration-test", null);
 
         assertEquals("saved", result.get("status"));
         assertNotNull(result.get("id"));
@@ -70,8 +81,8 @@ class MemoryPipelineIntegrationTest {
     @Test
     @Order(2)
     void observe_dedup_sameContentWithinWindow() throws IOException {
-        var r1 = pipeline.observe("Read", "dedup test content", "dedup output", "src/dedup.txt", "dedup-test");
-        var r2 = pipeline.observe("Read", "dedup test content", "dedup output", "src/dedup.txt", "dedup-test");
+        var r1 = pipeline.observe("Read", "dedup test content", "dedup output", "src/dedup.txt", "dedup-test", null);
+        var r2 = pipeline.observe("Read", "dedup test content", "dedup output", "src/dedup.txt", "dedup-test", null);
 
         assertEquals("saved", r1.get("status"));
         assertEquals("duplicate", r2.get("status"));
@@ -80,9 +91,9 @@ class MemoryPipelineIntegrationTest {
     @Test
     @Order(3)
     void recall_returnsResults() throws IOException, InterruptedException {
-        pipeline.observe("Edit", "database index optimization", "Created index", "db/schema.sql", "recall-test");
-        pipeline.observe("Read", "user authentication flow", "Auth middleware", "src/auth.ts", "recall-test");
-        esClient.indices().refresh(r -> r.index("memory-observations"));
+        pipeline.observe("Edit", "database index optimization", "Created index", "db/schema.sql", "recall-test", null);
+        pipeline.observe("Read", "user authentication flow", "Auth middleware", "src/auth.ts", "recall-test", null);
+        esClient.indices().refresh(r -> r.index(OBS_INDEX));
 
         var results = pipeline.recall("database", null, null);
         assertFalse(results.isEmpty(), "Should find database-related observations");
@@ -91,8 +102,8 @@ class MemoryPipelineIntegrationTest {
     @Test
     @Order(4)
     void recall_filtersByQuery() throws IOException, InterruptedException {
-        pipeline.observe("Write", "frontend CSS styles", "Added flexbox layout", "src/styles.css", "recall-filter");
-        esClient.indices().refresh(r -> r.index("memory-observations"));
+        pipeline.observe("Write", "frontend CSS styles", "Added flexbox layout", "src/styles.css", "recall-filter", null);
+        esClient.indices().refresh(r -> r.index(OBS_INDEX));
 
         var dbResults = pipeline.recall("database optimization", null, null);
         var cssResults = pipeline.recall("frontend CSS", null, null);
@@ -104,10 +115,10 @@ class MemoryPipelineIntegrationTest {
     @Test
     @Order(5)
     void saveInsight_worksWithDifferentTiers() throws IOException {
-        var semantic = pipeline.saveInsight("Use JWT for auth", MemoryTier.SEMANTIC, "tier-test", List.of("auth"));
+        var semantic = pipeline.saveInsight("Use JWT for auth", MemoryTier.SEMANTIC, "tier-test", List.of("auth"), null);
         assertEquals(MemoryTier.SEMANTIC.name(), semantic.get("tier"));
 
-        var procedural = pipeline.saveInsight("Always write tests first", MemoryTier.PROCEDURAL, "tier-test", List.of("workflow"));
+        var procedural = pipeline.saveInsight("Always write tests first", MemoryTier.PROCEDURAL, "tier-test", List.of("workflow"), null);
         assertEquals(MemoryTier.PROCEDURAL.name(), procedural.get("tier"));
     }
 
@@ -115,7 +126,7 @@ class MemoryPipelineIntegrationTest {
     @Order(6)
     void search_returnsScoredResults() throws IOException, InterruptedException {
         // Data seeded by earlier tests — need refresh
-        esClient.indices().refresh(r -> r.index("memory-observations"));
+        esClient.indices().refresh(r -> r.index(OBS_INDEX));
         var req = new MemorySearchRequest("authentication", null, null, null, 10, null);
         float[] vector = new DashScopeService(new DashScopeConfig() {{
             setApiKey(""); setEmbeddingDimensions(1024);
@@ -131,9 +142,9 @@ class MemoryPipelineIntegrationTest {
     @Test
     @Order(7)
     void fileHistory_returnsObservationsForFile() throws IOException, InterruptedException {
-        pipeline.observe("Read", "test file observation 1", "output1", "src/specific.rs", "fh-test");
-        pipeline.observe("Write", "test file observation 2", "output2", "src/specific.rs", "fh-test");
-        esClient.indices().refresh(r -> r.index("memory-observations"));
+        pipeline.observe("Read", "test file observation 1", "output1", "src/specific.rs", "fh-test", null);
+        pipeline.observe("Write", "test file observation 2", "output2", "src/specific.rs", "fh-test", null);
+        esClient.indices().refresh(r -> r.index(OBS_INDEX));
 
         var results = esService.getObservationsByFile("src/specific.rs", 10);
         assertTrue(results.size() >= 2);
@@ -149,7 +160,7 @@ class MemoryPipelineIntegrationTest {
     @Test
     @Order(9)
     void getProfile_returnsTotalCount() throws IOException {
-        esClient.indices().refresh(r -> r.index("memory-observations"));
+        esClient.indices().refresh(r -> r.index(OBS_INDEX));
         var profile = esService.getProfile();
         assertNotNull(profile.get("totalObservations"));
         assertTrue((Long) profile.get("totalObservations") > 0);
@@ -166,7 +177,7 @@ class MemoryPipelineIntegrationTest {
     @Test
     @Order(11)
     void deleteMemory_removesRecord() throws IOException {
-        var result = pipeline.observe("Delete", "delete test", "output", "src/delete.txt", "del-test");
+        var result = pipeline.observe("Delete", "delete test", "output", "src/delete.txt", "del-test", null);
         String id = (String) result.get("id");
 
         esService.deleteMemory(id);
@@ -198,7 +209,7 @@ class MemoryPipelineIntegrationTest {
         }
 
         esService.batchSave(docs, ids);
-        esClient.indices().refresh(r -> r.index("memory-observations"));
+        esClient.indices().refresh(r -> r.index(OBS_INDEX));
 
         var results = esService.getObservationsByFile("src/batch.txt", 10);
         assertTrue(results.size() >= 5);

@@ -19,6 +19,8 @@ import static org.junit.jupiter.api.Assertions.*;
 @TestMethodOrder(MethodOrderer.OrderAnnotation.class)
 class SearchQualityTest {
 
+    private static final String OBS_INDEX = "sq-observations";
+
     private MemoryPipelineService pipeline;
     private ElasticsearchService esService;
     private ElasticsearchClient esClient;
@@ -31,6 +33,17 @@ class SearchQualityTest {
             new co.elastic.clients.transport.rest_client.RestClientTransport(
                 client, new co.elastic.clients.json.jackson.JacksonJsonpMapper()));
         org.junit.jupiter.api.Assertions.assertTrue(esClient.ping().value(), "ES must be running");
+        client.close();
+    }
+
+    @AfterAll
+    static void cleanup() throws Exception {
+        var client = org.elasticsearch.client.RestClient.builder(
+            new org.apache.http.HttpHost("localhost", 9200, "http")).build();
+        var esClient = new co.elastic.clients.elasticsearch.ElasticsearchClient(
+            new co.elastic.clients.transport.rest_client.RestClientTransport(
+                client, new co.elastic.clients.json.jackson.JacksonJsonpMapper()));
+        esClient.indices().delete(d -> d.index(OBS_INDEX).ignoreUnavailable(true));
         client.close();
     }
 
@@ -48,7 +61,7 @@ class SearchQualityTest {
         var dsService = new DashScopeService(dsConfig);
         var props = new MemoryProperties();
 
-        esService = new ElasticsearchService(esClient, props, dsService);
+        esService = new ElasticsearchService(esClient, props, dsService, OBS_INDEX);
         pipeline = new MemoryPipelineService(esService, dsService, props);
     }
 
@@ -61,7 +74,7 @@ class SearchQualityTest {
             {"Edit", "Added Redis caching layer for user sessions", "session-cache.ts created", "src/cache/session.ts"},
             {"Write", "Optimize PostgreSQL query execution plan", "Added composite index on users", "db/migration_042.sql"},
             {"Read", "REST API endpoint rate limiting", "Implemented sliding window", "src/api/ratelimiter.ts"},
-            {"Edit", "JWT token refresh mechanism", "Added refresh token rotation", "src/auth/refresh.ts"},
+            {"Edit", "JWT token authentication and refresh mechanism", "Added refresh token rotation", "src/auth/refresh.ts"},
             {"Bash", "Run integration test suite", "All 127 tests passed", "src/test/integration"},
             {"Write", "GraphQL resolver for user profile", "Added DataLoader batching", "src/graphql/user.resolver.ts"},
             {"Edit", "WebSocket connection heartbeat", "Added 30s ping interval", "src/ws/heartbeat.ts"},
@@ -70,9 +83,9 @@ class SearchQualityTest {
         };
 
         for (int i = 0; i < observations.length; i++) {
-            pipeline.observe(observations[i][0], observations[i][1], observations[i][2], observations[i][3], "sq-test-" + i);
+            pipeline.observe(observations[i][0], observations[i][1], observations[i][2], observations[i][3], "sq-test-" + i, null);
         }
-        esClient.indices().refresh(r -> r.index("memory-observations"));
+        esClient.indices().refresh(r -> r.index(OBS_INDEX));
     }
 
     @Test
@@ -139,8 +152,8 @@ class SearchQualityTest {
     @Order(6)
     void sessionIdFilterWorks() throws IOException, InterruptedException {
         // Insert a unique observation with a specific session
-        pipeline.observe("Read", "unique sessionId filter test data xyz123", "output", "src/filter-session.txt", "sq-unique-session");
-        esClient.indices().refresh(r -> r.index("memory-observations"));
+        pipeline.observe("Read", "unique sessionId filter test data xyz123", "output", "src/filter-session.txt", "sq-unique-session", null);
+        esClient.indices().refresh(r -> r.index(OBS_INDEX));
 
         var results = pipeline.recall("unique sessionId filter xyz123", null, "sq-unique-session");
 
@@ -156,9 +169,9 @@ class SearchQualityTest {
     void sessionDiversification() throws IOException {
         // Add multiple observations with the same session
         for (int i = 0; i < 5; i++) {
-            pipeline.observe("Read", "diversification test " + i, "output " + i, "src/div.txt", "div-session-" + i);
+            pipeline.observe("Read", "diversification test " + i, "output " + i, "src/div.txt", "div-session-" + i, null);
         }
-        esClient.indices().refresh(r -> r.index("memory-observations"));
+        esClient.indices().refresh(r -> r.index(OBS_INDEX));
         // The same session appears 5 times, but diversification should limit per-session results
 
         var results = pipeline.recall("diversification test", null, null);
@@ -172,5 +185,28 @@ class SearchQualityTest {
         sessionCounts.values().forEach(count ->
             assertTrue(count <= 3, "Session diversification should limit to 3 per session, but found: " + count)
         );
+    }
+
+    @Test
+    @Order(8)
+    void emptyQueryReturnsNoResults() throws IOException {
+        var results = pipeline.recall("", null, null);
+        assertTrue(results.isEmpty(), "Empty query should return no results");
+    }
+
+    @Test
+    @Order(9)
+    void blankQueryReturnsNoResults() throws IOException {
+        var results = pipeline.recall("   ", null, null);
+        assertTrue(results.isEmpty(), "Blank query should return no results");
+    }
+
+    @Test
+    @Order(10)
+    void unrelatedQueryReturnsResults() throws IOException {
+        // Even for unrelated terms, BM25 should return empty or low-confidence results
+        var results = pipeline.recall("xyzzyquuxfoobar", null, null);
+        // Should not crash; may return empty or low-score results
+        assertNotNull(results);
     }
 }

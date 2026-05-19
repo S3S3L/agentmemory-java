@@ -24,6 +24,7 @@
       },
       "tier": { "type": "keyword" },
       "sessionId": { "type": "keyword" },
+      "projectId": { "type": "keyword" },
       "toolName": { "type": "keyword" },
       "filePath": {
         "type": "text",

@@ -24,28 +24,34 @@ import java.util.stream.Collectors;
 public class ElasticsearchService {
 
     private static final Logger log = LoggerFactory.getLogger(ElasticsearchService.class);
-    private static final String OBS_INDEX = "memory-observations";
+    private static final String DEFAULT_OBS_INDEX = "memory-observations";
     private static final String SESSION_INDEX = "memory-sessions";
 
     private final ElasticsearchClient client;
     private final MemoryProperties props;
     private final DashScopeService dashScopeService;
+    private final String observationIndex;
 
     public ElasticsearchService(ElasticsearchClient client, MemoryProperties props, DashScopeService dashScopeService) {
+        this(client, props, dashScopeService, DEFAULT_OBS_INDEX);
+    }
+
+    public ElasticsearchService(ElasticsearchClient client, MemoryProperties props, DashScopeService dashScopeService, String observationIndex) {
         this.client = client;
         this.props = props;
         this.dashScopeService = dashScopeService;
+        this.observationIndex = observationIndex;
     }
 
     public DashScopeService getDashScopeService() { return dashScopeService; }
 
     public void saveObservation(Map<String, Object> doc, String id) throws IOException {
         client.index(i -> i
-            .index(OBS_INDEX)
+            .index(observationIndex)
             .id(id)
             .document(doc)
         );
-        log.debug("Saved observation {} to {}", id, OBS_INDEX);
+        log.debug("Saved observation {} to {}", id, observationIndex);
     }
 
     public void saveSession(SessionRecord session) throws IOException {
@@ -117,11 +123,30 @@ public class ElasticsearchService {
     }
 
     private List<Hit<Map<String, Object>>> bm25Search(MemorySearchRequest req) throws IOException {
+        // Use QueryExpander to remove stop words for better BM25 matching
+        QueryExpander.ExpandedQuery expanded = QueryExpander.expand(req.query());
+        String searchQuery = expanded.normalizedQuery().isEmpty() ? req.query() : expanded.normalizedQuery();
+
+        if (!searchQuery.equals(req.query())) {
+            log.debug("BM25 query expanded: '{}' -> '{}'", req.query(), searchQuery);
+        }
+
         SearchResponse<Map> response = client.search(s -> {
-            var q = s.index(OBS_INDEX)
+            var q = s.index(observationIndex)
                 .size(props.getTopKBm25())
-                .source(src -> src.filter(f -> f.excludes("embedding")))
-                .query(qb -> qb.match(m -> m.field("content").query(req.query())));
+                .source(src -> src.filter(f -> f.excludes("embedding")));
+
+            // Multi-match across text fields with boosts for better BM25 recall
+            q = q.query(qb -> qb.multiMatch(mm -> mm
+                .query(searchQuery)
+                .fields(List.of(
+                    "content^1.0",
+                    "input^0.8",
+                    "output^0.6"
+                ))
+                .type(co.elastic.clients.elasticsearch._types.query_dsl.TextQueryType.BestFields)
+            ));
+
             return q;
         }, Map.class);
 
@@ -129,16 +154,21 @@ public class ElasticsearchService {
     }
 
     private List<Hit<Map<String, Object>>> vectorSearch(MemorySearchRequest req, float[] queryVector) throws IOException {
+        List<Float> floatList = new ArrayList<>(queryVector.length);
+        for (float v : queryVector) floatList.add(v);
+
+        // numCandidates must be significantly larger than k to ensure semantic recall
+        // Scanning more candidates improves recall at the cost of slightly higher latency
+        int numCandidates = Math.max(200, props.getTopKVector() * 10);
+
         SearchResponse<Map> response = client.search(s -> {
-            List<Float> floatList = new ArrayList<>(queryVector.length);
-            for (float v : queryVector) floatList.add(v);
-            var builder = s.index(OBS_INDEX)
+            var builder = s.index(observationIndex)
                 .size(props.getTopKVector())
                 .source(src -> src.filter(f -> f.excludes("embedding")))
                 .knn(k -> k
                     .field("embedding")
                     .queryVector(floatList)
-                    .numCandidates(props.getTopKVector())
+                    .numCandidates(numCandidates)
                     .k(props.getTopKVector())
                 );
             return builder;
@@ -184,7 +214,7 @@ public class ElasticsearchService {
     }
 
     public void deleteMemory(String id) throws IOException {
-        client.delete(d -> d.index(OBS_INDEX).id(id));
+        client.delete(d -> d.index(observationIndex).id(id));
     }
 
     public void batchSave(List<Map<String, Object>> documents, List<String> ids) throws IOException {
@@ -193,14 +223,14 @@ public class ElasticsearchService {
         for (int i = 0; i < documents.size(); i++) {
             int idx = i;
             ops.add(co.elastic.clients.elasticsearch.core.bulk.BulkOperation.of(o -> o
-                .index(bi -> bi.index(OBS_INDEX).id(ids.get(idx)).document(documents.get(idx)))));
+                .index(bi -> bi.index(observationIndex).id(ids.get(idx)).document(documents.get(idx)))));
         }
         client.bulk(b -> b.operations(ops));
     }
 
     public List<Map<String, Object>> getObservationsByFile(String filePath, int limit) throws IOException {
         SearchResponse<Map> response = client.search(s -> s
-            .index(OBS_INDEX)
+            .index(observationIndex)
             .size(limit)
             .query(q -> q.term(t -> t.field("filePath.keyword").value(filePath)))
             .sort(sort -> sort.field(f -> f.field("timestamp").order(SortOrder.Desc))),
@@ -214,7 +244,7 @@ public class ElasticsearchService {
 
     public List<Map<String, Object>> getTimeline(int limit) throws IOException {
         SearchResponse<Map> response = client.search(s -> s
-            .index(OBS_INDEX)
+            .index(observationIndex)
             .size(limit)
             .sort(sort -> sort.field(f -> f.field("timestamp").order(SortOrder.Desc)))
             .source(src -> src.filter(f -> f.excludes("embedding"))),
@@ -228,7 +258,7 @@ public class ElasticsearchService {
 
     public Map<String, Object> getProfile() throws IOException {
         SearchResponse<Void> response = client.search(s -> s
-            .index(OBS_INDEX)
+            .index(observationIndex)
             .size(0)
             .aggregations("top_files", a -> a.terms(t -> t.field("filePath.keyword").size(20))),
             Void.class
@@ -241,7 +271,7 @@ public class ElasticsearchService {
 
     public Map<String, Object> getPatternAggregations() throws IOException {
         SearchResponse<Void> response = client.search(s -> s
-            .index(OBS_INDEX)
+            .index(observationIndex)
             .size(0)
             .aggregations("tool_usage", a -> a.terms(t -> t.field("toolName.keyword").size(20)))
             .aggregations("top_tags", a -> a.terms(t -> t.field("tags.keyword").size(20))),
@@ -250,7 +280,77 @@ public class ElasticsearchService {
         return Map.of("aggregations", response.aggregations());
     }
 
+    public Map<String, Object> getProjectMetrics(String projectId) throws IOException {
+        SearchResponse<Map> response = client.search(s -> {
+            var base = s.index(observationIndex).size(0);
+            if (projectId != null && !projectId.isBlank()) {
+                base = base.query(q -> q.term(t -> t.field("projectId").value(projectId)));
+            }
+            return base
+                .aggregations("total", a -> a.valueCount(vc -> vc.field("_index")))
+                .aggregations("tier_dist", a -> a.terms(t -> t.field("tier.keyword").size(10)))
+                .aggregations("top_files", a -> a.terms(t -> t.field("filePath.keyword").size(20)))
+                .aggregations("tool_usage", a -> a.terms(t -> t.field("toolName.keyword").size(20)))
+                .aggregations("tag_trends", a -> a.terms(t -> t.field("tags.keyword").size(20)))
+                .aggregations("daily_trend", a -> a.dateHistogram(dh -> dh
+                    .field("timestamp")
+                    .calendarInterval(co.elastic.clients.elasticsearch._types.aggregations.CalendarInterval.Day)
+                    .format("yyyy-MM-dd")
+                ));
+        }, Map.class);
+
+        var aggs = response.aggregations();
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("projectId", projectId != null ? projectId : "all");
+
+        if (aggs != null && aggs.containsKey("total")) {
+            result.put("totalObservations", aggs.get("total").valueCount().value());
+        }
+        if (aggs != null && aggs.containsKey("tier_dist")) {
+            result.put("tierDistribution", extractBuckets(aggs.get("tier_dist")));
+        }
+        if (aggs != null && aggs.containsKey("top_files")) {
+            result.put("topFiles", extractBuckets(aggs.get("top_files")));
+        }
+        if (aggs != null && aggs.containsKey("tool_usage")) {
+            result.put("toolUsage", extractBuckets(aggs.get("tool_usage")));
+        }
+        if (aggs != null && aggs.containsKey("tag_trends")) {
+            result.put("tagTrends", extractBuckets(aggs.get("tag_trends")));
+        }
+        if (aggs != null && aggs.containsKey("daily_trend")) {
+            result.put("dailyTrend", extractDateHistogram(aggs.get("daily_trend")));
+        }
+
+        return result;
+    }
+
+    private List<Map<String, Object>> extractBuckets(co.elastic.clients.elasticsearch._types.aggregations.Aggregate agg) {
+        var buckets = agg.sterms().buckets().array();
+        List<Map<String, Object>> result = new ArrayList<>();
+        for (var bucket : buckets) {
+            String key = bucket.key().stringValue();
+            result.add(Map.of(
+                "key", key,
+                "count", bucket.docCount()
+            ));
+        }
+        return result;
+    }
+
+    private List<Map<String, Object>> extractDateHistogram(co.elastic.clients.elasticsearch._types.aggregations.Aggregate agg) {
+        var buckets = agg.dateHistogram().buckets().array();
+        List<Map<String, Object>> result = new ArrayList<>();
+        for (var bucket : buckets) {
+            result.add(Map.of(
+                "date", bucket.keyAsString(),
+                "count", bucket.docCount()
+            ));
+        }
+        return result;
+    }
+
     private long getTotalCount() throws IOException {
-        return client.count(c -> c.index(OBS_INDEX)).count();
+        return client.count(c -> c.index(observationIndex)).count();
     }
 }

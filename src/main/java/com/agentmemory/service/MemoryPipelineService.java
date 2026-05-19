@@ -31,7 +31,7 @@ public class MemoryPipelineService {
         this.props = props;
     }
 
-    public Map<String, Object> observe(String toolName, String input, String output, String filePath, String sessionId) throws IOException {
+    public Map<String, Object> observe(String toolName, String input, String output, String filePath, String sessionId, String projectId) throws IOException {
         String content = buildContent(toolName, input, output);
         String contentHash = sha256(content);
 
@@ -60,6 +60,7 @@ public class MemoryPipelineService {
         doc.put("embedding", toDoubleList(embedding));
         doc.put("tier", MemoryTier.WORKING.name());
         doc.put("sessionId", sessionId != null ? sessionId : "default");
+        doc.put("projectId", projectId);
         doc.put("toolName", toolName);
         doc.put("input", truncate(input, 2000));
         doc.put("output", truncate(output, 4000));
@@ -90,17 +91,19 @@ public class MemoryPipelineService {
             List<String> docs = results.stream().map(SearchResult::content).filter(Objects::nonNull).toList();
             var reranked = dashScopeService.rerank(query, docs);
             if (!reranked.isEmpty()) {
-                Map<Integer, Double> rerankMap = new HashMap<>();
+                // Build content → rerank score map for accurate lookup
+                Map<String, Double> contentToRerankScore = new HashMap<>();
                 for (var r : reranked) {
-                    rerankMap.put(r.index(), r.score());
+                    if (r.index() >= 0 && r.index() < docs.size()) {
+                        contentToRerankScore.put(docs.get(r.index()), r.score());
+                    }
                 }
-                // Capture results in a final variable for lambda
-                List<SearchResult> currentResults = results;
-                results = currentResults.stream()
+                results = results.stream()
                     .map(r -> new SearchResult(
                         r.id(), r.content(), r.tier(), r.sessionId(), r.toolName(),
-                        r.filePath(), r.score(), r.bm25Score(), r.vectorScore(),
-                        rerankMap.getOrDefault(currentResults.indexOf(r), 0.0)
+                        r.filePath(), contentToRerankScore.getOrDefault(r.content(), 0.0),
+                        r.bm25Score(), r.vectorScore(),
+                        contentToRerankScore.getOrDefault(r.content(), 0.0)
                     ))
                     .sorted(Comparator.comparingDouble(SearchResult::rerankScore).reversed())
                     .toList();
@@ -110,7 +113,7 @@ public class MemoryPipelineService {
         return results;
     }
 
-    public Map<String, Object> saveInsight(String content, MemoryTier tier, String sessionId, List<String> tags) throws IOException {
+    public Map<String, Object> saveInsight(String content, MemoryTier tier, String sessionId, List<String> tags, String projectId) throws IOException {
         float[] embedding = dashScopeService.embed(content);
         String id = UUID.randomUUID().toString();
         Map<String, Object> doc = new LinkedHashMap<>();
@@ -119,6 +122,7 @@ public class MemoryPipelineService {
         doc.put("embedding", toDoubleList(embedding));
         doc.put("tier", tier.name());
         doc.put("sessionId", sessionId != null ? sessionId : "default");
+        doc.put("projectId", projectId);
         doc.put("toolName", null);
         doc.put("input", null);
         doc.put("output", null);

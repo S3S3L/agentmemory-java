@@ -56,6 +56,7 @@ public class ElasticsearchConfig {
             initIndex(client, "memory-observations");
             initIndex(client, "memory-consolidated");
             initIndex(client, "memory-sessions");
+            addMissingFields(client);
         };
     }
 
@@ -69,6 +70,31 @@ public class ElasticsearchConfig {
                 .withJson(mappings)
             );
             log.info("Index created: {}", indexName);
+        }
+    }
+
+    /**
+     * Apply current mapping to existing indices to add new fields.
+     * ES allows adding new fields to existing indices via _mapping API.
+     */
+    private void addMissingFields(ElasticsearchClient client) throws IOException {
+        var mapper = new com.fasterxml.jackson.databind.ObjectMapper();
+        var mappings = new ClassPathResource("es-index-mappings.json").getInputStream();
+        com.fasterxml.jackson.databind.JsonNode root = mapper.readTree(mappings);
+        com.fasterxml.jackson.databind.JsonNode props = root.path("mappings").path("properties");
+        if (props.isMissingNode()) return;
+
+        // Build full properties JSON for putMapping
+        String propsJson = mapper.writeValueAsString(
+            java.util.Map.of("properties", mapper.treeToValue(props, java.util.Map.class)));
+        try {
+            client.indices().putMapping(m -> m
+                .index("memory-observations")
+                .withJson(new java.io.ByteArrayInputStream(propsJson.getBytes()))
+            );
+            log.info("Applied updated mapping to memory-observations");
+        } catch (Exception e) {
+            log.warn("Failed to apply mapping update: {}", e.getMessage());
         }
     }
 }

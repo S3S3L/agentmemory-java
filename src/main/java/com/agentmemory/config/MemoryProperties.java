@@ -9,9 +9,9 @@ public class MemoryProperties {
     private int tokenBudget = 2000;
     private int dedupWindowMinutes = 5;
     private int rrfK = 60;
-    private int maxResultsPerSession = 3;
-    private int topKBm25 = 20;
-    private int topKVector = 20;
+    private int maxResultsPerSession = 8;
+    private int topKBm25 = 40;
+    private int topKVector = 40;
     private int topKFinal = 10;
     private Consolidation consolidation = new Consolidation();
     private Decay decay = new Decay();

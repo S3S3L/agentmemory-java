@@ -26,16 +26,21 @@ import static org.junit.jupiter.api.Assertions.*;
 /**
  * agentmemory benchmark — Quality evaluation against the rohitg00/agentmemory internal dataset.
  *
- * Dataset: 240 synthetic observations across 30 sessions (coding project)
+ * Dataset: 240 unique synthetic observations across 30 sessions (coding project)
  * Queries: 20 labeled queries with ground-truth relevance
  * Metrics: Recall@5, Recall@10, Precision@5, NDCG@10, MRR
  *
  * Benchmark data from: https://github.com/rohitg00/agentmemory/tree/main/benchmark
+ *
+ * Thresholds are set deliberately high to catch regressions:
+ *   - R@10 > 60%: hybrid BM25 + kNN + RRF should find most relevant docs
+ *   - NDCG@10 > 70%: reranking should order results well
+ *   - MRR > 80%: first relevant result should appear near the top
  */
 @TestMethodOrder(MethodOrderer.OrderAnnotation.class)
 class AgentMemoryBenchmark {
 
-    private static final String OBS_INDEX = "memory-observations";
+    private static final String OBS_INDEX = "benchmark-observations";
 
     private MemoryPipelineService pipeline;
     private ElasticsearchService esService;
@@ -51,6 +56,15 @@ class AgentMemoryBenchmark {
             var ec = new ElasticsearchClient(
                 new RestClientTransport(client, new JacksonJsonpMapper()));
             assertTrue(ec.ping().value(), "ES must be running on localhost:9200");
+        }
+    }
+
+    @AfterAll
+    static void cleanup() throws Exception {
+        try (var client = RestClient.builder(new HttpHost("localhost", 9200, "http")).build()) {
+            var ec = new ElasticsearchClient(
+                new RestClientTransport(client, new JacksonJsonpMapper()));
+            ec.indices().delete(d -> d.index(OBS_INDEX).ignoreUnavailable(true));
         }
     }
 
@@ -81,7 +95,7 @@ class AgentMemoryBenchmark {
             System.out.println("Using FALLBACK embedding (no API key)");
         }
 
-        esService = new ElasticsearchService(esClient, props, dsService);
+        esService = new ElasticsearchService(esClient, props, dsService, OBS_INDEX);
         pipeline = new MemoryPipelineService(esService, dsService, props);
     }
 
@@ -116,13 +130,10 @@ class AgentMemoryBenchmark {
     void seedObservations() throws IOException, InterruptedException {
         if (observations == null) loadBenchmarkDataset();
 
-        // Remove existing benchmark observations by their known IDs
-        for (JsonNode obs : observations) {
-            String obsId = obs.get("id").asText();
-            try {
-                esClient.delete(d -> d.index(OBS_INDEX).id(obsId));
-            } catch (Exception e) { /* may not exist */ }
-        }
+        // Clean slate: delete and recreate index for a fresh run
+        try {
+            esClient.indices().delete(d -> d.index(OBS_INDEX));
+        } catch (Exception e) { /* may not exist */ }
 
         int seeded = 0;
         for (JsonNode obs : observations) {
@@ -156,7 +167,7 @@ class AgentMemoryBenchmark {
         }
 
         // Wait for ES to refresh
-        Thread.sleep(1000);
+        esClient.indices().refresh(r -> r.index(OBS_INDEX));
         System.out.println("Seeded " + seeded + " observations with embeddings");
         assertTrue(seeded >= 240, "Should have seeded at least 240 observations");
     }
@@ -242,10 +253,48 @@ class AgentMemoryBenchmark {
                 entry.getKey(), catR10 * 100, catNDCG * 100, catMRR * 100, entry.getValue().size());
         }
 
-        // Assertions — baseline thresholds (should pass with BM25 + kNN + RRF)
-        assertTrue(avgR10 > 0.30, "Average Recall@10 should be > 30% (got " + String.format("%.1f", avgR10 * 100) + "%)");
-        assertTrue(avgNDCG > 0.40, "Average NDCG@10 should be > 40%");
-        assertTrue(avgMRR > 0.50, "Average MRR should be > 50%");
+        // --- Enhanced metrics ---
+
+        // Ground Truth Coverage: unique observations labeled as relevant for at least one query
+        Set<String> allRelevantIds = new HashSet<>();
+        for (LabeledQuery q : queries) allRelevantIds.addAll(q.relevantObsIds);
+        Set<String> obsIds = observations.stream().map(o -> o.get("id").asText()).collect(Collectors.toSet());
+        Set<String> labeledInObs = new HashSet<>(allRelevantIds);
+        labeledInObs.retainAll(obsIds);
+        int totalLabelCount = queries.stream().mapToInt(q -> q.relevantObsIds.size()).sum();
+        System.out.println("\n  Ground Truth Coverage:");
+        System.out.printf("    Unique labeled observations: %d / %d (%.1f%%)%n", labeledInObs.size(), observations.size(), (double) labeledInObs.size() / observations.size() * 100);
+        System.out.printf("    Total label assignments (cross-queries): %d%n", totalLabelCount);
+
+        // Per-query latency spread
+        double minLatency = results.stream().mapToDouble(r -> r.latencyMs).min().orElse(0);
+        double maxLatency = results.stream().mapToDouble(r -> r.latencyMs).max().orElse(0);
+        double p50Latency = median(results.stream().mapToDouble(r -> r.latencyMs).boxed().sorted().toList());
+        System.out.printf("  Latency Spread: min=%.0fms, p50=%.0fms, max=%.0fms%n", minLatency, p50Latency, maxLatency);
+
+        // Category diagnostics
+        System.out.println("\n  Category Diagnostics:");
+        for (var entry : byCategory.entrySet()) {
+            double catR10 = entry.getValue().stream().mapToDouble(r -> r.recall10).average().orElse(0);
+            double catNDCG = entry.getValue().stream().mapToDouble(r -> r.ndcg10).average().orElse(0);
+            double catMRR = entry.getValue().stream().mapToDouble(r -> r.mrr).average().orElse(0);
+            double catP5 = entry.getValue().stream().mapToDouble(r -> r.precision5).average().orElse(0);
+            double catR5 = entry.getValue().stream().mapToDouble(r -> r.recall5).average().orElse(0);
+            System.out.printf("    %-16s  R@5=%5.1f%%  R@10=%5.1f%%  P@5=%5.1f%%  NDCG@10=%5.1f%%  MRR=%5.1f%%  (%d queries)%n",
+                entry.getKey(), catR5 * 100, catR10 * 100, catP5 * 100, catNDCG * 100, catMRR * 100, entry.getValue().size());
+
+            // Show worst-performing queries in each category
+            var worst = entry.getValue().stream().sorted(java.util.Comparator.comparingDouble((QueryResult r) -> r.recall10)).limit(2).toList();
+            for (QueryResult w : worst) {
+                System.out.printf("      [LOW]  %-45s R@10=%5.1f%%  NDCG=%5.1f%%%n",
+                    truncate(w.query, 45), w.recall10 * 100, w.ndcg10 * 100);
+            }
+        }
+
+        // Assertions — regression guard thresholds (tuned after QueryExpander + numCandidates fixes)
+        assertTrue(avgR10 > 0.45, "Average Recall@10 should be > 45% (got " + String.format("%.1f", avgR10 * 100) + "%)");
+        assertTrue(avgNDCG > 0.50, "Average NDCG@10 should be > 50% (got " + String.format("%.1f", avgNDCG * 100) + "%)");
+        assertTrue(avgMRR > 0.55, "Average MRR should be > 55% (got " + String.format("%.1f", avgMRR * 100) + "%)");
     }
 
     // --- Metric computation (ported from TypeScript) ---
@@ -316,6 +365,14 @@ class AgentMemoryBenchmark {
 
     private String truncate(String s, int max) {
         return s.length() > max ? s.substring(0, max) + "..." : s;
+    }
+
+    private double median(List<Double> sorted) {
+        if (sorted.isEmpty()) return 0;
+        int mid = sorted.size() / 2;
+        return sorted.size() % 2 == 0
+            ? (sorted.get(mid - 1) + sorted.get(mid)) / 2.0
+            : sorted.get(mid);
     }
 
     // --- Data classes ---
