@@ -61,12 +61,13 @@ class MemoryPipelineIntegrationTest {
         var dsConfig = new DashScopeConfig();
         dsConfig.setApiKey("");
         dsConfig.setEmbeddingDimensions(1024);
-        var dsService = new DashScopeService(dsConfig);
+        var dsEmbedding = new DashScopeEmbeddingService(dsConfig);
+        var dsRerank = new DashScopeRerankService(dsConfig);
 
         var props = new MemoryProperties();
 
-        esService = new ElasticsearchService(esClient, props, dsService, OBS_INDEX);
-        pipeline = new MemoryPipelineService(esService, dsService, props);
+        esService = new ElasticsearchService(esClient, props, dsEmbedding, OBS_INDEX);
+        pipeline = new MemoryPipelineService(esService, dsEmbedding, dsRerank, props);
     }
 
     @Test
@@ -128,7 +129,7 @@ class MemoryPipelineIntegrationTest {
         // Data seeded by earlier tests — need refresh
         esClient.indices().refresh(r -> r.index(OBS_INDEX));
         var req = new MemorySearchRequest("authentication", null, null, null, 10, null);
-        float[] vector = new DashScopeService(new DashScopeConfig() {{
+        float[] vector = new DashScopeEmbeddingService(new DashScopeConfig() {{
             setApiKey(""); setEmbeddingDimensions(1024);
         }}).embed("authentication");
 

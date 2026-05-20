@@ -6,10 +6,13 @@ import co.elastic.clients.transport.rest_client.RestClientTransport;
 import com.agentmemory.config.DashScopeConfig;
 import com.agentmemory.config.MemoryProperties;
 import com.agentmemory.mcp.McpToolRegistrar;
-import com.agentmemory.service.DashScopeService;
+import com.agentmemory.service.DashScopeEmbeddingService;
+import com.agentmemory.service.DashScopeRerankService;
 import com.agentmemory.service.ElasticsearchService;
+import com.agentmemory.service.EmbeddingService;
 import com.agentmemory.service.MemoryConsolidationService;
 import com.agentmemory.service.MemoryPipelineService;
+import com.agentmemory.service.RerankService;
 import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
@@ -83,9 +86,10 @@ public class StdioMcpServer {
         mapper.configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false);
 
         // Services
-        DashScopeService dashScopeService = new DashScopeService(dsConfig);
-        ElasticsearchService esService = new ElasticsearchService(esClient, memProps, dashScopeService);
-        MemoryPipelineService pipeline = new MemoryPipelineService(esService, dashScopeService, memProps);
+        EmbeddingService embeddingService = new DashScopeEmbeddingService(dsConfig);
+        RerankService rerankService = new DashScopeRerankService(dsConfig);
+        ElasticsearchService esService = new ElasticsearchService(esClient, memProps, embeddingService);
+        MemoryPipelineService pipeline = new MemoryPipelineService(esService, embeddingService, rerankService, memProps);
 
         // Consolidation (scheduled tasks) - start in background
         MemoryConsolidationService consolidation = new MemoryConsolidationService(esClient);

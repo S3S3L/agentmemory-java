@@ -29,21 +29,21 @@ public class ElasticsearchService {
 
     private final ElasticsearchClient client;
     private final MemoryProperties props;
-    private final DashScopeService dashScopeService;
+    private final EmbeddingService embeddingService;
     private final String observationIndex;
 
-    public ElasticsearchService(ElasticsearchClient client, MemoryProperties props, DashScopeService dashScopeService) {
-        this(client, props, dashScopeService, DEFAULT_OBS_INDEX);
+    public ElasticsearchService(ElasticsearchClient client, MemoryProperties props, EmbeddingService embeddingService) {
+        this(client, props, embeddingService, DEFAULT_OBS_INDEX);
     }
 
-    public ElasticsearchService(ElasticsearchClient client, MemoryProperties props, DashScopeService dashScopeService, String observationIndex) {
+    public ElasticsearchService(ElasticsearchClient client, MemoryProperties props, EmbeddingService embeddingService, String observationIndex) {
         this.client = client;
         this.props = props;
-        this.dashScopeService = dashScopeService;
+        this.embeddingService = embeddingService;
         this.observationIndex = observationIndex;
     }
 
-    public DashScopeService getDashScopeService() { return dashScopeService; }
+    public EmbeddingService getEmbeddingService() { return embeddingService; }
 
     public void saveObservation(Map<String, Object> doc, String id) throws IOException {
         client.index(i -> i
@@ -72,7 +72,7 @@ public class ElasticsearchService {
 
         // Vector search — only if real embedding is available
         List<Hit<Map<String, Object>>> vectorHits = List.<Hit<Map<String, Object>>>of();
-        boolean useVector = dashScopeService != null && dashScopeService.isRealEmbeddingAvailable();
+        boolean useVector = embeddingService != null && embeddingService.isAvailable();
         if (useVector && queryVector != null && queryVector.length > 0) {
             vectorHits = vectorSearch(req, queryVector);
         }

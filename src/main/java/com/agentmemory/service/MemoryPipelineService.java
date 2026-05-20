@@ -21,13 +21,15 @@ public class MemoryPipelineService {
     private static final Logger log = LoggerFactory.getLogger(MemoryPipelineService.class);
 
     private final ElasticsearchService esService;
-    private final DashScopeService dashScopeService;
+    private final EmbeddingService embeddingService;
+    private final RerankService rerankService;
     private final MemoryProperties props;
     private final Map<String, Instant> dedupCache = new ConcurrentHashMap<>();
 
-    public MemoryPipelineService(ElasticsearchService esService, DashScopeService dashScopeService, MemoryProperties props) {
+    public MemoryPipelineService(ElasticsearchService esService, EmbeddingService embeddingService, RerankService rerankService, MemoryProperties props) {
         this.esService = esService;
-        this.dashScopeService = dashScopeService;
+        this.embeddingService = embeddingService;
+        this.rerankService = rerankService;
         this.props = props;
     }
 
@@ -51,7 +53,7 @@ public class MemoryPipelineService {
         output = privacyFilter(output);
 
         // Embedding
-        float[] embedding = dashScopeService.embed(content);
+        float[] embedding = embeddingService.embed(content);
 
         String id = UUID.randomUUID().toString();
         Map<String, Object> doc = new LinkedHashMap<>();
@@ -81,15 +83,15 @@ public class MemoryPipelineService {
     }
 
     public List<SearchResult> recall(String query, String projectId, String sessionId) throws IOException {
-        float[] queryVector = dashScopeService.embed(query);
+        float[] queryVector = embeddingService.embed(query);
 
         var req = new MemorySearchRequest(query, projectId, sessionId, null, props.getTopKFinal(), null);
         List<SearchResult> results = esService.search(req, queryVector);
 
-        // Rerank with DashScope
+        // Rerank
         if (!results.isEmpty()) {
             List<String> docs = results.stream().map(SearchResult::content).filter(Objects::nonNull).toList();
-            var reranked = dashScopeService.rerank(query, docs);
+            var reranked = rerankService.rerank(query, docs);
             if (!reranked.isEmpty()) {
                 // Build content → rerank score map for accurate lookup
                 Map<String, Double> contentToRerankScore = new HashMap<>();
@@ -114,7 +116,7 @@ public class MemoryPipelineService {
     }
 
     public Map<String, Object> saveInsight(String content, MemoryTier tier, String sessionId, List<String> tags, String projectId) throws IOException {
-        float[] embedding = dashScopeService.embed(content);
+        float[] embedding = embeddingService.embed(content);
         String id = UUID.randomUUID().toString();
         Map<String, Object> doc = new LinkedHashMap<>();
         doc.put("id", id);

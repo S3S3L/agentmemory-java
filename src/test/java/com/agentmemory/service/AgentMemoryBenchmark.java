@@ -86,17 +86,18 @@ class AgentMemoryBenchmark {
         dsConfig.setEmbeddingModel("text-embedding-v4");
         dsConfig.setEmbeddingDimensions(1024);
         dsConfig.setRerankModel("gte-rerank");
-        var dsService = new DashScopeService(dsConfig);
+        var dsEmbedding = new DashScopeEmbeddingService(dsConfig);
+        var dsRerank = new DashScopeRerankService(dsConfig);
         var props = new MemoryProperties();
 
-        if (dsService.isRealEmbeddingAvailable()) {
+        if (dsEmbedding.isAvailable()) {
             System.out.println("Using REAL DashScope embedding (API key configured)");
         } else {
             System.out.println("Using FALLBACK embedding (no API key)");
         }
 
-        esService = new ElasticsearchService(esClient, props, dsService, OBS_INDEX);
-        pipeline = new MemoryPipelineService(esService, dsService, props);
+        esService = new ElasticsearchService(esClient, props, dsEmbedding, OBS_INDEX);
+        pipeline = new MemoryPipelineService(esService, dsEmbedding, dsRerank, props);
     }
 
     /**
@@ -140,7 +141,7 @@ class AgentMemoryBenchmark {
             String content = buildContent(obs);
 
             // Generate embedding for this observation
-            float[] embedding = esService.getDashScopeService().embed(content);
+            float[] embedding = esService.getEmbeddingService().embed(content);
             List<Double> embeddingList = new ArrayList<>(embedding.length);
             for (float v : embedding) embeddingList.add((double) v);
 

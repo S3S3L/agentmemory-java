@@ -69,11 +69,12 @@ class McpBenchmarkTest {
         dsConfig.setEmbeddingModel("text-embedding-v4");
         dsConfig.setEmbeddingDimensions(1024);
         dsConfig.setRerankModel("gte-rerank");
-        var dsService = new DashScopeService(dsConfig);
+        var dsEmbedding = new DashScopeEmbeddingService(dsConfig);
+        var dsRerank = new DashScopeRerankService(dsConfig);
         var props = new MemoryProperties();
 
-        esService = new ElasticsearchService(esClient, props, dsService, OBS_INDEX);
-        pipeline = new MemoryPipelineService(esService, dsService, props);
+        esService = new ElasticsearchService(esClient, props, dsEmbedding, OBS_INDEX);
+        pipeline = new MemoryPipelineService(esService, dsEmbedding, dsRerank, props);
         toolRegistrar = new McpToolRegistrar(pipeline, esService);
     }
 
