@@ -1,22 +1,35 @@
 package com.agentmemory.service;
 
-import co.elastic.clients.elasticsearch.ElasticsearchClient;
-import co.elastic.clients.json.jackson.JacksonJsonpMapper;
-import co.elastic.clients.transport.rest_client.RestClientTransport;
-import com.agentmemory.config.DashScopeConfig;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
+import java.io.IOException;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
+
+import org.apache.http.HttpHost;
+import org.elasticsearch.client.RestClient;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.MethodOrderer;
+import org.junit.jupiter.api.Order;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.TestMethodOrder;
+
 import com.agentmemory.config.MemoryProperties;
-import com.agentmemory.model.*;
+import com.agentmemory.model.MemorySearchRequest;
+import com.agentmemory.model.MemoryTier;
 import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
-import org.apache.http.HttpHost;
-import org.elasticsearch.client.RestClient;
-import org.junit.jupiter.api.*;
 
-import java.io.IOException;
-import java.util.*;
-
-import static org.junit.jupiter.api.Assertions.*;
+import co.elastic.clients.elasticsearch.ElasticsearchClient;
+import co.elastic.clients.json.jackson.JacksonJsonpMapper;
+import co.elastic.clients.transport.rest_client.RestClientTransport;
 
 /**
  * Integration tests against the running Elasticsearch instance.
@@ -58,16 +71,12 @@ class MemoryPipelineIntegrationTest {
         esClient = new ElasticsearchClient(
             new RestClientTransport(restClient, new JacksonJsonpMapper(localMapper)));
 
-        var dsConfig = new DashScopeConfig();
-        dsConfig.setApiKey("");
-        dsConfig.setEmbeddingDimensions(1024);
-        var dsEmbedding = new DashScopeEmbeddingService(dsConfig);
-        var dsRerank = new DashScopeRerankService(dsConfig);
-
+        var embedding = TestServiceFactory.createEmbeddingService();
+        var rerank = TestServiceFactory.createRerankService();
         var props = new MemoryProperties();
 
-        esService = new ElasticsearchService(esClient, props, dsEmbedding, OBS_INDEX);
-        pipeline = new MemoryPipelineService(esService, dsEmbedding, dsRerank, props);
+        esService = new ElasticsearchService(esClient, props, embedding, OBS_INDEX);
+        pipeline = new MemoryPipelineService(esService, embedding, rerank, props);
     }
 
     @Test
@@ -129,9 +138,7 @@ class MemoryPipelineIntegrationTest {
         // Data seeded by earlier tests — need refresh
         esClient.indices().refresh(r -> r.index(OBS_INDEX));
         var req = new MemorySearchRequest("authentication", null, null, null, 10, null);
-        float[] vector = new DashScopeEmbeddingService(new DashScopeConfig() {{
-            setApiKey(""); setEmbeddingDimensions(1024);
-        }}).embed("authentication");
+        float[] vector = TestServiceFactory.createEmbeddingService().embed("authentication");
 
         var results = esService.search(req, vector);
         assertFalse(results.isEmpty());

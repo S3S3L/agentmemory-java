@@ -1,18 +1,22 @@
-package com.agentmemory.service;
-
-import com.agentmemory.config.DashScopeConfig;
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import okhttp3.*;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-import org.springframework.stereotype.Service;
+package com.agentmemory.service.rerank;
 
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
 
-@Service
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import com.agentmemory.config.DashScopeConfig;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+
+import okhttp3.MediaType;
+import okhttp3.OkHttpClient;
+import okhttp3.Request;
+import okhttp3.RequestBody;
+import okhttp3.Response;
+
 public class DashScopeRerankService implements RerankService {
 
     private static final Logger log = LoggerFactory.getLogger(DashScopeRerankService.class);

@@ -1,21 +1,30 @@
 package com.agentmemory.service;
 
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
+import java.util.List;
+import java.util.Map;
+
+import org.apache.http.HttpHost;
+import org.elasticsearch.client.RestClient;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.MethodOrderer;
+import org.junit.jupiter.api.Order;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.TestMethodOrder;
+
+import com.agentmemory.config.MemoryProperties;
+import com.agentmemory.mcp.McpToolRegistrar;
+
 import co.elastic.clients.elasticsearch.ElasticsearchClient;
 import co.elastic.clients.json.jackson.JacksonJsonpMapper;
 import co.elastic.clients.transport.rest_client.RestClientTransport;
-import com.agentmemory.config.DashScopeConfig;
-import com.agentmemory.config.MemoryProperties;
-import com.agentmemory.mcp.McpToolRegistrar;
-import com.agentmemory.model.TokenBudget;
 import io.modelcontextprotocol.server.McpServerFeatures;
 import io.modelcontextprotocol.spec.McpSchema;
-import org.apache.http.HttpHost;
-import org.elasticsearch.client.RestClient;
-import org.junit.jupiter.api.*;
-
-import java.util.*;
-
-import static org.junit.jupiter.api.Assertions.*;
 
 /**
  * Benchmark via MCP Tool handler calls.
@@ -63,18 +72,12 @@ class McpBenchmarkTest {
         esClient = new ElasticsearchClient(
             new RestClientTransport(restClient, new JacksonJsonpMapper(localMapper)));
 
-        var dsConfig = new DashScopeConfig();
-        String apiKey = System.getenv("DASHSCOPE_API_KEY");
-        dsConfig.setApiKey(apiKey != null && !apiKey.isBlank() ? apiKey : "");
-        dsConfig.setEmbeddingModel("text-embedding-v4");
-        dsConfig.setEmbeddingDimensions(1024);
-        dsConfig.setRerankModel("gte-rerank");
-        var dsEmbedding = new DashScopeEmbeddingService(dsConfig);
-        var dsRerank = new DashScopeRerankService(dsConfig);
+        var embedding = TestServiceFactory.createEmbeddingService();
+        var rerank = TestServiceFactory.createRerankService();
         var props = new MemoryProperties();
 
-        esService = new ElasticsearchService(esClient, props, dsEmbedding, OBS_INDEX);
-        pipeline = new MemoryPipelineService(esService, dsEmbedding, dsRerank, props);
+        esService = new ElasticsearchService(esClient, props, embedding, OBS_INDEX);
+        pipeline = new MemoryPipelineService(esService, embedding, rerank, props);
         toolRegistrar = new McpToolRegistrar(pipeline, esService);
     }
 

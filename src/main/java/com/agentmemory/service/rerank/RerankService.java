@@ -1,4 +1,4 @@
-package com.agentmemory.service;
+package com.agentmemory.service.rerank;
 
 import java.util.List;
 

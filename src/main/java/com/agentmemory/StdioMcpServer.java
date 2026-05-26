@@ -1,31 +1,41 @@
 package com.agentmemory;
 
-import co.elastic.clients.elasticsearch.ElasticsearchClient;
-import co.elastic.clients.json.jackson.JacksonJsonpMapper;
-import co.elastic.clients.transport.rest_client.RestClientTransport;
-import com.agentmemory.config.DashScopeConfig;
-import com.agentmemory.config.MemoryProperties;
-import com.agentmemory.mcp.McpToolRegistrar;
-import com.agentmemory.service.DashScopeEmbeddingService;
-import com.agentmemory.service.DashScopeRerankService;
-import com.agentmemory.service.ElasticsearchService;
-import com.agentmemory.service.EmbeddingService;
-import com.agentmemory.service.MemoryConsolidationService;
-import com.agentmemory.service.MemoryPipelineService;
-import com.agentmemory.service.RerankService;
-import com.fasterxml.jackson.databind.DeserializationFeature;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
-import io.modelcontextprotocol.server.McpServer;
-import io.modelcontextprotocol.server.McpSyncServer;
-import io.modelcontextprotocol.server.transport.StdioServerTransportProvider;
+import java.io.IOException;
+import java.util.concurrent.CountDownLatch;
+
 import org.apache.http.HttpHost;
 import org.elasticsearch.client.RestClient;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.io.IOException;
-import java.util.concurrent.CountDownLatch;
+import com.agentmemory.config.DashScopeConfig;
+import com.agentmemory.config.MemoryProperties;
+import com.agentmemory.config.OllamaConfig;
+import com.agentmemory.config.RestRerankConfig;
+import com.agentmemory.mcp.McpToolRegistrar;
+import com.agentmemory.model.EmbeddingImpl;
+import com.agentmemory.model.RerankImpl;
+import com.agentmemory.service.ElasticsearchService;
+import com.agentmemory.service.MemoryConsolidationService;
+import com.agentmemory.service.MemoryPipelineService;
+import com.agentmemory.service.embed.DashScopeEmbeddingService;
+import com.agentmemory.service.embed.EmbeddingService;
+import com.agentmemory.service.embed.OllamaEmbeddingService;
+import com.agentmemory.service.rerank.DashScopeRerankService;
+import com.agentmemory.service.rerank.RerankService;
+import com.agentmemory.service.rerank.RestRerankService;
+import com.fasterxml.jackson.databind.DeserializationFeature;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.dataformat.yaml.YAMLFactory;
+import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
+
+import co.elastic.clients.elasticsearch.ElasticsearchClient;
+import co.elastic.clients.json.jackson.JacksonJsonpMapper;
+import co.elastic.clients.transport.rest_client.RestClientTransport;
+import io.modelcontextprotocol.server.McpServer;
+import io.modelcontextprotocol.server.McpSyncServer;
+import io.modelcontextprotocol.server.transport.StdioServerTransportProvider;
 
 /**
  * Standalone MCP server via stdio transport.
@@ -37,35 +47,73 @@ import java.util.concurrent.CountDownLatch;
 public class StdioMcpServer {
 
     private static final Logger log = LoggerFactory.getLogger(StdioMcpServer.class);
+    private static DashScopeConfig dsConfig;
 
-    public static void main(String[] args) throws Exception {
-        log.info("Starting AgentMemory MCP stdio server...");
-
-        // Config from environment
-        String esHost = System.getenv("ES_HOST");
-        if (esHost == null || esHost.isBlank()) esHost = "localhost";
-        int esPort = parseIntOr(System.getenv("ES_PORT"), 9200);
-        String esScheme = System.getenv("ES_SCHEME");
-        if (esScheme == null || esScheme.isBlank()) esScheme = "http";
+    private static DashScopeConfig getDsConfig() {
+        if (dsConfig != null)
+            return dsConfig; // Already initialized
 
         String dashScopeApiKey = System.getenv("DASHSCOPE_API_KEY");
 
         // Create config objects manually
-        DashScopeConfig dsConfig = new DashScopeConfig();
+        dsConfig = new DashScopeConfig();
         dsConfig.setApiKey(dashScopeApiKey != null ? dashScopeApiKey : "");
         dsConfig.setEmbeddingModel(getEnvOr("DASHSCOPE_EMBEDDING_MODEL", "text-embedding-v4"));
         dsConfig.setEmbeddingDimensions(parseIntOr(System.getenv("DASHSCOPE_EMBEDDING_DIMENSIONS"), 1024));
         dsConfig.setRerankModel(getEnvOr("DASHSCOPE_RERANK_MODEL", "gte-rerank"));
+        return dsConfig;
+    }
+
+    public static void main(String[] args) throws Exception {
+        log.info("Starting AgentMemory MCP stdio server...");
+        ObjectMapper yml = new ObjectMapper(new YAMLFactory())
+                .configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false);
+
+        // Config from environment
+        String esHost = System.getenv("ES_HOST");
+        if (esHost == null || esHost.isBlank())
+            esHost = "localhost";
+        int esPort = parseIntOr(System.getenv("ES_PORT"), 9200);
+        String esScheme = System.getenv("ES_SCHEME");
+        if (esScheme == null || esScheme.isBlank())
+            esScheme = "http";
+
+        JsonNode config = yml.readTree(StdioMcpServer.class.getClassLoader().getResourceAsStream("application.yml"));
+
+        EmbeddingImpl eImpl = EmbeddingImpl.fromString(config.get("agentmemory").get("embedding").asText());
+        RerankImpl rImpl = RerankImpl.fromString(config.get("agentmemory").get("rerank").asText());
+
+        EmbeddingService embeddingService;
+        RerankService rerankService;
+
+        switch (eImpl) {
+            case DASH_SCOPE:
+                embeddingService = new DashScopeEmbeddingService(getDsConfig());
+                break;
+            case OLLAMA:
+            default:
+                embeddingService = new OllamaEmbeddingService(
+                        yml.treeToValue(config.get("ollama"), OllamaConfig.class));
+                break;
+        }
+
+        switch (rImpl) {
+            case DASH_SCOPE:
+                rerankService = new DashScopeRerankService(getDsConfig());
+                break;
+            case REST:
+            default:
+                rerankService = new RestRerankService(yml.treeToValue(config.get("rest").get("rerank"), RestRerankConfig.class));
+                break;
+        }
 
         MemoryProperties memProps = new MemoryProperties();
 
         // Elasticsearch client
         RestClient restClient = RestClient.builder(
-            new HttpHost(esHost, esPort, esScheme)
-        ).build();
+                new HttpHost(esHost, esPort, esScheme)).build();
         ElasticsearchClient esClient = new ElasticsearchClient(
-            new RestClientTransport(restClient, new JacksonJsonpMapper())
-        );
+                new RestClientTransport(restClient, new JacksonJsonpMapper()));
 
         // Verify ES connection
         try {
@@ -86,10 +134,9 @@ public class StdioMcpServer {
         mapper.configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false);
 
         // Services
-        EmbeddingService embeddingService = new DashScopeEmbeddingService(dsConfig);
-        RerankService rerankService = new DashScopeRerankService(dsConfig);
         ElasticsearchService esService = new ElasticsearchService(esClient, memProps, embeddingService);
-        MemoryPipelineService pipeline = new MemoryPipelineService(esService, embeddingService, rerankService, memProps);
+        MemoryPipelineService pipeline = new MemoryPipelineService(esService, embeddingService, rerankService,
+                memProps);
 
         // Consolidation (scheduled tasks) - start in background
         MemoryConsolidationService consolidation = new MemoryConsolidationService(esClient);
@@ -103,10 +150,11 @@ public class StdioMcpServer {
 
         // Build MCP server
         McpSyncServer server = McpServer.sync(stdioTransport)
-            .serverInfo("agentmemory", "0.1.0")
-            .instructions("Persistent memory for coding agents. Search, save, and manage coding knowledge across sessions.")
-            .tools(registrar.registerAll())
-            .build();
+                .serverInfo("agentmemory", "0.1.0")
+                .instructions(
+                        "Persistent memory for coding agents. Search, save, and manage coding knowledge across sessions.")
+                .tools(registrar.registerAll())
+                .build();
 
         log.info("AgentMemory MCP stdio server started. Waiting for input on stdin...");
 
@@ -132,7 +180,12 @@ public class StdioMcpServer {
     }
 
     private static int parseIntOr(String val, int defaultValue) {
-        if (val == null || val.isBlank()) return defaultValue;
-        try { return Integer.parseInt(val); } catch (NumberFormatException e) { return defaultValue; }
+        if (val == null || val.isBlank())
+            return defaultValue;
+        try {
+            return Integer.parseInt(val);
+        } catch (NumberFormatException e) {
+            return defaultValue;
+        }
     }
 }

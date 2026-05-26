@@ -1,4 +1,4 @@
-package com.agentmemory.service;
+package com.agentmemory.service.embed;
 
 /**
  * Common interface for text embedding providers.

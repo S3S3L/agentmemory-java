@@ -1,27 +1,40 @@
 package com.agentmemory.service;
 
-import co.elastic.clients.elasticsearch.ElasticsearchClient;
-import co.elastic.clients.json.jackson.JacksonJsonpMapper;
-import co.elastic.clients.transport.rest_client.RestClientTransport;
-import com.agentmemory.config.DashScopeConfig;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
+import java.io.IOException;
+import java.io.InputStream;
+import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.stream.Collectors;
+
+import org.apache.http.HttpHost;
+import org.elasticsearch.client.RestClient;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.MethodOrderer;
+import org.junit.jupiter.api.Order;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.TestMethodOrder;
+
 import com.agentmemory.config.MemoryProperties;
-import com.agentmemory.model.MemorySearchRequest;
 import com.agentmemory.model.SearchResult;
 import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
-import org.apache.http.HttpHost;
-import org.elasticsearch.client.RestClient;
-import org.junit.jupiter.api.*;
 
-import java.io.IOException;
-import java.io.InputStream;
-import java.util.*;
-import java.util.stream.Collectors;
-
-import static org.junit.jupiter.api.Assertions.*;
+import co.elastic.clients.elasticsearch.ElasticsearchClient;
+import co.elastic.clients.json.jackson.JacksonJsonpMapper;
+import co.elastic.clients.transport.rest_client.RestClientTransport;
 
 /**
  * agentmemory benchmark — Quality evaluation against the rohitg00/agentmemory internal dataset.
@@ -80,24 +93,12 @@ class AgentMemoryBenchmark {
         esClient = new ElasticsearchClient(
             new RestClientTransport(restClient, new JacksonJsonpMapper(localMapper)));
 
-        var dsConfig = new DashScopeConfig();
-        String apiKey = System.getenv("DASHSCOPE_API_KEY");
-        dsConfig.setApiKey(apiKey != null && !apiKey.isBlank() ? apiKey : "");
-        dsConfig.setEmbeddingModel("text-embedding-v4");
-        dsConfig.setEmbeddingDimensions(1024);
-        dsConfig.setRerankModel("gte-rerank");
-        var dsEmbedding = new DashScopeEmbeddingService(dsConfig);
-        var dsRerank = new DashScopeRerankService(dsConfig);
+        var embedding = TestServiceFactory.createEmbeddingService();
+        var rerank = TestServiceFactory.createRerankService();
         var props = new MemoryProperties();
 
-        if (dsEmbedding.isAvailable()) {
-            System.out.println("Using REAL DashScope embedding (API key configured)");
-        } else {
-            System.out.println("Using FALLBACK embedding (no API key)");
-        }
-
-        esService = new ElasticsearchService(esClient, props, dsEmbedding, OBS_INDEX);
-        pipeline = new MemoryPipelineService(esService, dsEmbedding, dsRerank, props);
+        esService = new ElasticsearchService(esClient, props, embedding, OBS_INDEX);
+        pipeline = new MemoryPipelineService(esService, embedding, rerank, props);
     }
 
     /**

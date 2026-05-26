@@ -5,6 +5,10 @@ spring:
   application:
     name: agentmemory
 
+agentmemory:
+  embedding: ollama
+  rerank: rest
+
 # Elasticsearch
 elasticsearch:
   host: localhost
@@ -35,3 +39,14 @@ memory:
   decay:
     enabled: true
     cron: "0 0 2 * * *"
+
+# Ollama
+ollama:
+  endpoint: http://localhost:11434
+  embeddingModel: mxbai-embed-large
+  dimensions: 1024
+
+# Rest
+rest: 
+  rerank:
+    endpoint: http://localhost:8000/rerank

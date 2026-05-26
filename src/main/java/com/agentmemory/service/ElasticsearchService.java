@@ -1,23 +1,31 @@
 package com.agentmemory.service;
 
-import co.elastic.clients.elasticsearch.ElasticsearchClient;
-import co.elastic.clients.elasticsearch.core.BulkRequest;
-import co.elastic.clients.elasticsearch.core.SearchResponse;
-import co.elastic.clients.elasticsearch.core.search.Hit;
-import co.elastic.clients.elasticsearch._types.SortOrder;
+import java.io.IOException;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import java.util.Optional;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.stereotype.Service;
+
 import com.agentmemory.config.MemoryProperties;
 import com.agentmemory.model.MemorySearchRequest;
 import com.agentmemory.model.MemoryTier;
 import com.agentmemory.model.QueryExpander;
 import com.agentmemory.model.SearchResult;
 import com.agentmemory.model.SessionRecord;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-import org.springframework.stereotype.Service;
+import com.agentmemory.service.embed.EmbeddingService;
 
-import java.io.IOException;
-import java.util.*;
-import java.util.stream.Collectors;
+import co.elastic.clients.elasticsearch.ElasticsearchClient;
+import co.elastic.clients.elasticsearch._types.SortOrder;
+import co.elastic.clients.elasticsearch.core.SearchResponse;
+import co.elastic.clients.elasticsearch.core.search.Hit;
 
 @SuppressWarnings("unchecked")
 @Service
@@ -32,6 +40,7 @@ public class ElasticsearchService {
     private final EmbeddingService embeddingService;
     private final String observationIndex;
 
+    @Autowired
     public ElasticsearchService(ElasticsearchClient client, MemoryProperties props, EmbeddingService embeddingService) {
         this(client, props, embeddingService, DEFAULT_OBS_INDEX);
     }
@@ -72,9 +81,22 @@ public class ElasticsearchService {
 
         // Vector search — only if real embedding is available
         List<Hit<Map<String, Object>>> vectorHits = List.<Hit<Map<String, Object>>>of();
-        boolean useVector = embeddingService != null && embeddingService.isAvailable();
-        if (useVector && queryVector != null && queryVector.length > 0) {
-            vectorHits = vectorSearch(req, queryVector);
+        boolean useVector = embeddingService != null
+            && embeddingService.isAvailable()
+            && queryVector != null
+            && queryVector.length > 0;
+        if (useVector) {
+            try {
+                vectorHits = vectorSearch(req, queryVector);
+            } catch (IOException | RuntimeException e) {
+                useVector = false;
+                log.warn(
+                    "Vector search unavailable for index {}. Falling back to BM25 only: {}",
+                    observationIndex,
+                    e.getMessage()
+                );
+                log.debug("Vector search failure details", e);
+            }
         }
 
         // RRF fusion
@@ -131,7 +153,7 @@ public class ElasticsearchService {
             log.debug("BM25 query expanded: '{}' -> '{}'", req.query(), searchQuery);
         }
 
-        SearchResponse<Map> response = client.search(s -> {
+        SearchResponse<Map<String, Object>> response = client.search(s -> {
             var q = s.index(observationIndex)
                 .size(props.getTopKBm25())
                 .source(src -> src.filter(f -> f.excludes("embedding")));
@@ -148,7 +170,7 @@ public class ElasticsearchService {
             ));
 
             return q;
-        }, Map.class);
+        }, mapDocumentClass());
 
         return (List<Hit<Map<String, Object>>>)(List<?>) response.hits().hits();
     }
@@ -161,7 +183,7 @@ public class ElasticsearchService {
         // Scanning more candidates improves recall at the cost of slightly higher latency
         int numCandidates = Math.max(200, props.getTopKVector() * 10);
 
-        SearchResponse<Map> response = client.search(s -> {
+        SearchResponse<Map<String, Object>> response = client.search(s -> {
             var builder = s.index(observationIndex)
                 .size(props.getTopKVector())
                 .source(src -> src.filter(f -> f.excludes("embedding")))
@@ -172,7 +194,7 @@ public class ElasticsearchService {
                     .k(props.getTopKVector())
                 );
             return builder;
-        }, Map.class);
+        }, mapDocumentClass());
 
         return (List<Hit<Map<String, Object>>>)(List<?>) response.hits().hits();
     }
@@ -229,12 +251,12 @@ public class ElasticsearchService {
     }
 
     public List<Map<String, Object>> getObservationsByFile(String filePath, int limit) throws IOException {
-        SearchResponse<Map> response = client.search(s -> s
+        SearchResponse<Map<String, Object>> response = client.search(s -> s
             .index(observationIndex)
             .size(limit)
             .query(q -> q.term(t -> t.field("filePath.keyword").value(filePath)))
             .sort(sort -> sort.field(f -> f.field("timestamp").order(SortOrder.Desc))),
-            Map.class
+            mapDocumentClass()
         );
         return (List<Map<String, Object>>)(List<?>) response.hits().hits().stream()
             .map(Hit::source)
@@ -243,12 +265,12 @@ public class ElasticsearchService {
     }
 
     public List<Map<String, Object>> getTimeline(int limit) throws IOException {
-        SearchResponse<Map> response = client.search(s -> s
+        SearchResponse<Map<String, Object>> response = client.search(s -> s
             .index(observationIndex)
             .size(limit)
             .sort(sort -> sort.field(f -> f.field("timestamp").order(SortOrder.Desc)))
             .source(src -> src.filter(f -> f.excludes("embedding"))),
-            Map.class
+            mapDocumentClass()
         );
         return (List<Map<String, Object>>)(List<?>) response.hits().hits().stream()
             .map(Hit::source)
@@ -281,7 +303,7 @@ public class ElasticsearchService {
     }
 
     public Map<String, Object> getProjectMetrics(String projectId) throws IOException {
-        SearchResponse<Map> response = client.search(s -> {
+        SearchResponse<Map<String, Object>> response = client.search(s -> {
             var base = s.index(observationIndex).size(0);
             if (projectId != null && !projectId.isBlank()) {
                 base = base.query(q -> q.term(t -> t.field("projectId").value(projectId)));
@@ -297,7 +319,7 @@ public class ElasticsearchService {
                     .calendarInterval(co.elastic.clients.elasticsearch._types.aggregations.CalendarInterval.Day)
                     .format("yyyy-MM-dd")
                 ));
-        }, Map.class);
+            }, mapDocumentClass());
 
         var aggs = response.aggregations();
         Map<String, Object> result = new LinkedHashMap<>();
@@ -352,5 +374,9 @@ public class ElasticsearchService {
 
     private long getTotalCount() throws IOException {
         return client.count(c -> c.index(observationIndex)).count();
+    }
+
+    private Class<Map<String, Object>> mapDocumentClass() {
+        return (Class<Map<String, Object>>) (Class<?>) Map.class;
     }
 }
