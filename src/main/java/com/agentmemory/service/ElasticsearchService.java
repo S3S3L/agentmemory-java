@@ -152,6 +152,9 @@ public class ElasticsearchService {
         if (!searchQuery.equals(req.query())) {
             log.debug("BM25 query expanded: '{}' -> '{}'", req.query(), searchQuery);
         }
+        if (!expanded.synonymsAdded().isEmpty()) {
+            log.debug("BM25 synonyms added: {}", expanded.synonymsAdded());
+        }
 
         SearchResponse<Map<String, Object>> response = client.search(s -> {
             var q = s.index(observationIndex)

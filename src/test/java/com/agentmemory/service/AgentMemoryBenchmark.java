@@ -7,6 +7,9 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.IOException;
 import java.io.InputStream;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
@@ -297,6 +300,48 @@ class AgentMemoryBenchmark {
         assertTrue(avgR10 > 0.45, "Average Recall@10 should be > 45% (got " + String.format("%.1f", avgR10 * 100) + "%)");
         assertTrue(avgNDCG > 0.50, "Average NDCG@10 should be > 50% (got " + String.format("%.1f", avgNDCG * 100) + "%)");
         assertTrue(avgMRR > 0.55, "Average MRR should be > 55% (got " + String.format("%.1f", avgMRR * 100) + "%)");
+
+        // --- Persist benchmark report ---
+        BenchmarkReport report = new BenchmarkReport();
+        report.timestamp = Instant.now().toString();
+        report.description = "AgentMemory Java quality benchmark";
+        report.obsCount = observations != null ? observations.size() : 240;
+        report.queryCount = queries.size();
+        report.r5 = avgR5;
+        report.r10 = avgR10;
+        report.precision5 = avgP5;
+        report.ndcg10 = avgNDCG;
+        report.mrr = avgMRR;
+        report.latencyAvgMs = avgLatency;
+        report.latencyP50Ms = median(results.stream().mapToDouble(r -> r.latencyMs).boxed().sorted().toList());
+        report.latencyMinMs = results.stream().mapToDouble(r -> r.latencyMs).min().orElse(0);
+        report.latencyMaxMs = results.stream().mapToDouble(r -> r.latencyMs).max().orElse(0);
+
+        report.byCategory = new LinkedHashMap<>();
+        for (var entry : byCategory.entrySet()) {
+            CategoryStats cs = new CategoryStats();
+            cs.r5 = entry.getValue().stream().mapToDouble(r -> r.recall5).average().orElse(0);
+            cs.r10 = entry.getValue().stream().mapToDouble(r -> r.recall10).average().orElse(0);
+            cs.p5 = entry.getValue().stream().mapToDouble(r -> r.precision5).average().orElse(0);
+            cs.ndcg10 = entry.getValue().stream().mapToDouble(r -> r.ndcg10).average().orElse(0);
+            cs.mrr = entry.getValue().stream().mapToDouble(r -> r.mrr).average().orElse(0);
+            cs.count = entry.getValue().size();
+            report.byCategory.put(entry.getKey(), cs);
+        }
+
+        report.worstQueries = results.stream()
+            .sorted(java.util.Comparator.comparingDouble((QueryResult r) -> r.recall10))
+            .limit(5)
+            .map(r -> { QueryRow qr = new QueryRow(); qr.query = r.query; qr.category = r.category; qr.r10 = r.recall10; qr.ndcg10 = r.ndcg10; return qr; })
+            .collect(Collectors.toList());
+
+        Path dir = Path.of("target", "benchmark-results");
+        Files.createDirectories(dir);
+        String json = mapper.writerWithDefaultPrettyPrinter().writeValueAsString(report);
+        Files.writeString(dir.resolve("quality-java.json"), json);
+        String md = buildMarkdownReport(report);
+        Files.writeString(dir.resolve("quality-java.md"), md);
+        System.out.println("Benchmark report written to " + dir.toAbsolutePath());
     }
 
     // --- Metric computation (ported from TypeScript) ---
@@ -375,6 +420,66 @@ class AgentMemoryBenchmark {
         return sorted.size() % 2 == 0
             ? (sorted.get(mid - 1) + sorted.get(mid)) / 2.0
             : sorted.get(mid);
+    }
+
+    private String buildMarkdownReport(BenchmarkReport r) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("# AgentMemory Java — Quality Benchmark\n\n");
+        sb.append("**Date**: ").append(r.timestamp).append("\n");
+        sb.append("**Dataset**: ").append(r.obsCount).append(" observations / ").append(r.queryCount).append(" queries\n\n");
+        sb.append("## Summary\n\n");
+        sb.append("| Metric | Score |\n|---|---|\n");
+        sb.append(String.format("| Recall@5 | %.1f%% |%n", r.r5 * 100));
+        sb.append(String.format("| Recall@10 | %.1f%% |%n", r.r10 * 100));
+        sb.append(String.format("| Precision@5 | %.1f%% |%n", r.precision5 * 100));
+        sb.append(String.format("| NDCG@10 | %.1f%% |%n", r.ndcg10 * 100));
+        sb.append(String.format("| MRR | %.1f%% |%n", r.mrr * 100));
+        sb.append(String.format("| Latency avg | %.1f ms |%n", r.latencyAvgMs));
+        sb.append(String.format("| Latency p50 | %.1f ms |%n", r.latencyP50Ms));
+        sb.append("\n## By Category\n\n");
+        sb.append("| Category | R@5 | R@10 | P@5 | NDCG@10 | MRR | Queries |\n|---|---|---|---|---|---|---|\n");
+        for (var e : r.byCategory.entrySet()) {
+            CategoryStats cs = e.getValue();
+            sb.append(String.format("| %s | %.1f%% | %.1f%% | %.1f%% | %.1f%% | %.1f%% | %d |%n",
+                e.getKey(), cs.r5 * 100, cs.r10 * 100, cs.p5 * 100, cs.ndcg10 * 100, cs.mrr * 100, cs.count));
+        }
+        sb.append("\n## Lowest-recall Queries\n\n");
+        sb.append("| Query | Category | R@10 | NDCG@10 |\n|---|---|---|---|\n");
+        for (QueryRow qr : r.worstQueries) {
+            sb.append(String.format("| %s | %s | %.1f%% | %.1f%% |%n",
+                qr.query.replace("|", "\\|"), qr.category, qr.r10 * 100, qr.ndcg10 * 100));
+        }
+        return sb.toString();
+    }
+
+    // --- Report POJOs ---
+
+    static class BenchmarkReport {
+        public String timestamp;
+        public String description;
+        public int obsCount;
+        public int queryCount;
+        public double r5;
+        public double r10;
+        public double precision5;
+        public double ndcg10;
+        public double mrr;
+        public double latencyAvgMs;
+        public double latencyP50Ms;
+        public double latencyMinMs;
+        public double latencyMaxMs;
+        public Map<String, CategoryStats> byCategory;
+        public List<QueryRow> worstQueries;
+    }
+
+    static class CategoryStats {
+        public double r5, r10, p5, ndcg10, mrr;
+        public int count;
+    }
+
+    static class QueryRow {
+        public String query, category;
+        public double r10, ndcg10;
     }
 
     // --- Data classes ---
