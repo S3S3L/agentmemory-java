@@ -8,6 +8,9 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -34,6 +37,7 @@ public class ElasticsearchService {
     private static final Logger log = LoggerFactory.getLogger(ElasticsearchService.class);
     private static final String DEFAULT_OBS_INDEX = "memory-observations";
     private static final String SESSION_INDEX = "memory-sessions";
+    private static final ExecutorService SEARCH_EXECUTOR = Executors.newVirtualThreadPerTaskExecutor();
 
     private final ElasticsearchClient client;
     private final MemoryProperties props;
@@ -76,26 +80,54 @@ public class ElasticsearchService {
             return List.of();
         }
 
-        // Enhanced BM25 search
-        List<Hit<Map<String, Object>>> bm25Hits = bm25Search(req);
-
-        // Vector search — only if real embedding is available
-        List<Hit<Map<String, Object>>> vectorHits = List.<Hit<Map<String, Object>>>of();
-        boolean useVector = embeddingService != null
+        boolean canUseVector = embeddingService != null
             && embeddingService.isAvailable()
             && queryVector != null
             && queryVector.length > 0;
-        if (useVector) {
+
+        // Launch BM25 and vector searches in parallel
+        CompletableFuture<List<Hit<Map<String, Object>>>> bm25Future =
+            CompletableFuture.supplyAsync(() -> {
+                try {
+                    return bm25Search(req);
+                } catch (IOException e) {
+                    throw new java.io.UncheckedIOException(e);
+                }
+            }, SEARCH_EXECUTOR);
+
+        CompletableFuture<List<Hit<Map<String, Object>>>> vectorFuture = canUseVector
+            ? CompletableFuture.supplyAsync(() -> {
+                try {
+                    return vectorSearch(req, queryVector);
+                } catch (IOException e) {
+                    throw new java.io.UncheckedIOException(e);
+                }
+            }, SEARCH_EXECUTOR)
+            : CompletableFuture.completedFuture(List.of());
+
+        List<Hit<Map<String, Object>>> bm25Hits;
+        List<Hit<Map<String, Object>>> vectorHits = List.of();
+        boolean useVector = canUseVector;
+
+        try {
+            bm25Hits = bm25Future.join();
+        } catch (Exception e) {
+            Throwable cause = e.getCause() != null ? e.getCause() : e;
+            throw new IOException("BM25 search failed: " + cause.getMessage(), cause);
+        }
+
+        if (canUseVector) {
             try {
-                vectorHits = vectorSearch(req, queryVector);
-            } catch (IOException | RuntimeException e) {
+                vectorHits = vectorFuture.join();
+            } catch (Exception e) {
                 useVector = false;
+                Throwable cause = e.getCause() != null ? e.getCause() : e;
                 log.warn(
                     "Vector search unavailable for index {}. Falling back to BM25 only: {}",
                     observationIndex,
-                    e.getMessage()
+                    cause.getMessage()
                 );
-                log.debug("Vector search failure details", e);
+                log.debug("Vector search failure details", cause);
             }
         }
 

@@ -15,6 +15,10 @@ import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.TimeUnit;
+
+import com.github.benmanes.caffeine.cache.Cache;
+import com.github.benmanes.caffeine.cache.Caffeine;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -45,6 +49,11 @@ public class MemoryPipelineService {
     private final RerankService rerankService;
     private final MemoryProperties props;
     private final Map<String, Instant> dedupCache = new ConcurrentHashMap<>();
+    private final Cache<String, float[]> embeddingCache = Caffeine.newBuilder()
+            .maximumSize(10_000)
+            .expireAfterWrite(6, TimeUnit.HOURS)
+            .recordStats()
+            .build();
 
     public MemoryPipelineService(ElasticsearchService esService, EmbeddingService embeddingService, RerankService rerankService, MemoryProperties props) {
         this.esService = esService;
@@ -73,7 +82,9 @@ public class MemoryPipelineService {
         output = privacyFilter(output);
 
         // Embedding
-        float[] embedding = embeddingService.embed(content);
+        String filteredContent = content; // effectively-final alias for lambda
+        String embedCacheKey = "model:" + content.strip().toLowerCase();
+        float[] embedding = embeddingCache.get(embedCacheKey, k -> embeddingService.embed(filteredContent));
 
         String id = UUID.randomUUID().toString();
         Map<String, Object> doc = new LinkedHashMap<>();
@@ -113,32 +124,39 @@ public class MemoryPipelineService {
     }
 
     public List<SearchResult> recall(String query, String projectId, String sessionId) throws IOException {
-        float[] queryVector = embeddingService.embed(query);
+        String cacheKey = "model:" + query.strip().toLowerCase();
+        float[] queryVector = embeddingCache.get(cacheKey, k -> embeddingService.embed(query));
+        log.debug("Embedding cache stats: {}", getCacheStats());
 
         var req = new MemorySearchRequest(query, projectId, sessionId, null, props.getTopKFinal(), null);
         List<SearchResult> results = esService.search(req, queryVector);
 
-        // Rerank
+        // Skip rerank when result set is small or top score is dominating
         if (!results.isEmpty()) {
-            List<String> docs = results.stream().map(SearchResult::content).filter(Objects::nonNull).toList();
-            var reranked = rerankService.rerank(query, docs);
-            if (!reranked.isEmpty()) {
-                // Build content → rerank score map for accurate lookup
-                Map<String, Double> contentToRerankScore = new HashMap<>();
-                for (var r : reranked) {
-                    if (r.index() >= 0 && r.index() < docs.size()) {
-                        contentToRerankScore.put(docs.get(r.index()), r.score());
+            boolean skipRerank = results.size() <= 3
+                    || (results.size() >= 2 && results.get(0).score() / Math.max(results.get(1).score(), 0.01) > 2.0);
+
+            if (!skipRerank && rerankService != null) {
+                List<String> docs = results.stream().map(SearchResult::content).filter(Objects::nonNull).toList();
+                var reranked = rerankService.rerank(query, docs);
+                if (!reranked.isEmpty()) {
+                    // Build content → rerank score map for accurate lookup
+                    Map<String, Double> contentToRerankScore = new HashMap<>();
+                    for (var r : reranked) {
+                        if (r.index() >= 0 && r.index() < docs.size()) {
+                            contentToRerankScore.put(docs.get(r.index()), r.score());
+                        }
                     }
+                    results = results.stream()
+                        .map(r -> new SearchResult(
+                            r.id(), r.content(), r.tier(), r.sessionId(), r.toolName(),
+                            r.filePath(), contentToRerankScore.getOrDefault(r.content(), 0.0),
+                            r.bm25Score(), r.vectorScore(),
+                            contentToRerankScore.getOrDefault(r.content(), 0.0)
+                        ))
+                        .sorted(Comparator.comparingDouble(SearchResult::rerankScore).reversed())
+                        .toList();
                 }
-                results = results.stream()
-                    .map(r -> new SearchResult(
-                        r.id(), r.content(), r.tier(), r.sessionId(), r.toolName(),
-                        r.filePath(), contentToRerankScore.getOrDefault(r.content(), 0.0),
-                        r.bm25Score(), r.vectorScore(),
-                        contentToRerankScore.getOrDefault(r.content(), 0.0)
-                    ))
-                    .sorted(Comparator.comparingDouble(SearchResult::rerankScore).reversed())
-                    .toList();
             }
         }
 
@@ -146,7 +164,8 @@ public class MemoryPipelineService {
     }
 
     public Map<String, Object> saveInsight(String content, MemoryTier tier, String sessionId, List<String> tags, String projectId) throws IOException {
-        float[] embedding = embeddingService.embed(content);
+        String cacheKey = "model:" + content.strip().toLowerCase();
+        float[] embedding = embeddingCache.get(cacheKey, k -> embeddingService.embed(content));
         String id = UUID.randomUUID().toString();
         Map<String, Object> doc = new LinkedHashMap<>();
         doc.put("id", id);
@@ -170,6 +189,12 @@ public class MemoryPipelineService {
         doc.put("accessCount", 0);
         esService.saveObservation(doc, id);
         return doc;
+    }
+
+    public String getCacheStats() {
+        com.github.benmanes.caffeine.cache.stats.CacheStats stats = embeddingCache.stats();
+        return String.format("EmbeddingCache: size=%d, hits=%d, misses=%d, hitRate=%.1f%%",
+            embeddingCache.estimatedSize(), stats.hitCount(), stats.missCount(), stats.hitRate() * 100);
     }
 
     private String buildTitle(String toolName, String input) {
