@@ -7,10 +7,12 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
+import java.util.LinkedHashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -29,6 +31,14 @@ import com.agentmemory.service.rerank.RerankService;
 public class MemoryPipelineService {
 
     private static final Logger log = LoggerFactory.getLogger(MemoryPipelineService.class);
+
+    private static final Set<String> CONCEPT_TERMS = Set.of(
+        "authentication", "jwt", "oauth", "token", "database", "sql", "postgres",
+        "prisma", "migration", "deployment", "kubernetes", "docker", "cache", "redis",
+        "test", "ci", "pipeline", "security", "authorization", "performance",
+        "monitoring", "error", "exception", "middleware", "api", "route",
+        "controller", "schema", "config", "typescript"
+    );
 
     private final ElasticsearchService esService;
     private final EmbeddingService embeddingService;
@@ -80,6 +90,16 @@ public class MemoryPipelineService {
         doc.put("timestamp", now.toString());
         doc.put("metadata", Map.of());
         doc.put("tags", extractTags(content));
+
+        // Structured fields for multi-field BM25 boosting
+        String title = buildTitle(toolName, input);
+        List<String> concepts = extractConcepts(content, extractTags(content));
+        doc.put("title", title);
+        doc.put("concepts", concepts);
+        doc.put("narrative", truncate(output, 1000));
+        doc.put("facts", List.of());
+        doc.put("files", filePath != null ? List.of(filePath) : List.of());
+
         doc.put("isActive", true);
         doc.put("accessCount", 0);
         doc.put("lastAccessed", null);
@@ -141,10 +161,33 @@ public class MemoryPipelineService {
         doc.put("filePath", null);
         doc.put("timestamp", Instant.now().toString());
         doc.put("tags", tags != null ? tags : List.of());
+        doc.put("title", truncate(content, 120));
+        doc.put("concepts", tags != null ? tags : List.of());
+        doc.put("narrative", content);
+        doc.put("facts", List.of());
+        doc.put("files", List.of());
         doc.put("isActive", true);
         doc.put("accessCount", 0);
         esService.saveObservation(doc, id);
         return doc;
+    }
+
+    private String buildTitle(String toolName, String input) {
+        String base = toolName != null ? toolName + ": " : "";
+        if (input != null && !input.isBlank()) {
+            String firstLine = input.strip().lines().findFirst().orElse("").strip();
+            base += firstLine.length() > 80 ? firstLine.substring(0, 80) : firstLine;
+        }
+        return base.length() > 120 ? base.substring(0, 120) : base;
+    }
+
+    private List<String> extractConcepts(String content, List<String> existingTags) {
+        Set<String> concepts = new LinkedHashSet<>(existingTags);
+        String lower = content.toLowerCase();
+        for (String term : CONCEPT_TERMS) {
+            if (lower.contains(term)) concepts.add(term);
+        }
+        return new ArrayList<>(concepts);
     }
 
     private String buildContent(String toolName, String input, String output) {

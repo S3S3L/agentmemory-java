@@ -161,15 +161,21 @@ public class ElasticsearchService {
                 .size(props.getTopKBm25())
                 .source(src -> src.filter(f -> f.excludes("embedding")));
 
-            // Multi-match across text fields with boosts for better BM25 recall
+            // Multi-field multi-match with per-field boosts; tieBreaker combines cross-field scores
             q = q.query(qb -> qb.multiMatch(mm -> mm
                 .query(searchQuery)
                 .fields(List.of(
+                    "title^3.0",
+                    "concepts^2.5",
+                    "tags^2.0",
+                    "facts^2.0",
                     "content^1.0",
                     "input^0.8",
-                    "output^0.6"
+                    "output^0.6",
+                    "filePath^1.5"
                 ))
                 .type(co.elastic.clients.elasticsearch._types.query_dsl.TextQueryType.BestFields)
+                .tieBreaker(0.3)
             ));
 
             return q;

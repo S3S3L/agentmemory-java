@@ -35,6 +35,31 @@
       "timestamp": { "type": "date" },
       "metadata": { "type": "object", "enabled": false },
       "tags": { "type": "keyword" },
+      "title": {
+        "type": "text",
+        "analyzer": "standard",
+        "fields": {
+          "keyword": { "type": "keyword", "ignore_above": 512 }
+        }
+      },
+      "concepts": {
+        "type": "text",
+        "analyzer": "standard",
+        "fields": {
+          "keyword": { "type": "keyword", "ignore_above": 256 }
+        }
+      },
+      "narrative": {
+        "type": "text",
+        "analyzer": "standard"
+      },
+      "facts": {
+        "type": "text",
+        "analyzer": "standard"
+      },
+      "files": {
+        "type": "keyword"
+      },
       "supersededBy": { "type": "keyword" },
       "isActive": { "type": "boolean" },
       "accessCount": { "type": "integer" },

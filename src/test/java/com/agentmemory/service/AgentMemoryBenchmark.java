@@ -164,6 +164,27 @@ class AgentMemoryBenchmark {
             doc.put("accessCount", 0);
             doc.put("lastAccessed", null);
 
+            // Structured fields for multi-field BM25 boosting
+            String title = obs.has("title") ? obs.get("title").asText("") : "";
+            String narrative = obs.has("narrative") ? obs.get("narrative").asText("") : "";
+            List<String> facts = new ArrayList<>();
+            if (obs.has("facts") && obs.get("facts").isArray()) {
+                for (JsonNode f : obs.get("facts")) facts.add(f.asText());
+            }
+            List<String> concepts = new ArrayList<>();
+            if (obs.has("concepts") && obs.get("concepts").isArray()) {
+                for (JsonNode c : obs.get("concepts")) concepts.add(c.asText());
+            }
+            List<String> files = new ArrayList<>();
+            if (obs.has("files") && obs.get("files").isArray()) {
+                for (JsonNode f : obs.get("files")) files.add(f.asText());
+            }
+            doc.put("title", title);
+            doc.put("concepts", concepts);
+            doc.put("narrative", narrative);
+            doc.put("facts", facts);
+            doc.put("files", files);
+
             esClient.index(i -> i
                 .index(OBS_INDEX)
                 .id(obs.get("id").asText())
