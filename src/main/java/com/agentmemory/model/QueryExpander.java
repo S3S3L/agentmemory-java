@@ -1,6 +1,11 @@
 package com.agentmemory.model;
 
-import java.util.*;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -23,7 +28,7 @@ public class QueryExpander {
         "into", "over", "after", "before", "between", "under", "again",
         "further", "once", "here", "there", "all", "each", "few", "more",
         "most", "other", "some", "such", "only", "own", "same", "as",
-        "did", "set", "get", "use", "used", "using"
+        "set", "get", "use", "used", "using"
     );
 
     private static final Pattern PHRASE_PATTERN = Pattern.compile("\"([^\"]+)\"");
