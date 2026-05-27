@@ -100,11 +100,13 @@ public class MemoryPipelineService {
         doc.put("filePath", filePath);
         doc.put("timestamp", now.toString());
         doc.put("metadata", Map.of());
+        // tags = coarse categories for filtering (keyword field)
         doc.put("tags", extractTags(content));
 
         // Structured fields for multi-field BM25 boosting
         String title = buildTitle(toolName, input);
-        List<String> concepts = extractConcepts(content, extractTags(content));
+        // concepts = fine-grained tech terms for BM25 text search (text field, NOT coarse tags)
+        List<String> concepts = extractConcepts(content);
         doc.put("title", title);
         doc.put("concepts", concepts);
         doc.put("narrative", truncate(output, 1000));
@@ -179,9 +181,11 @@ public class MemoryPipelineService {
         doc.put("output", null);
         doc.put("filePath", null);
         doc.put("timestamp", Instant.now().toString());
+        // tags = caller-supplied coarse categories for filtering (keyword field)
         doc.put("tags", tags != null ? tags : List.of());
+        // concepts = fine-grained tech terms from content for BM25 text search (text field)
         doc.put("title", truncate(content, 120));
-        doc.put("concepts", tags != null ? tags : List.of());
+        doc.put("concepts", extractConcepts(content));
         doc.put("narrative", content);
         doc.put("facts", List.of());
         doc.put("files", List.of());
@@ -206,8 +210,9 @@ public class MemoryPipelineService {
         return base.length() > 120 ? base.substring(0, 120) : base;
     }
 
-    private List<String> extractConcepts(String content, List<String> existingTags) {
-        Set<String> concepts = new LinkedHashSet<>(existingTags);
+    /** Extract fine-grained tech terms from content for BM25 concepts field (text). */
+    private List<String> extractConcepts(String content) {
+        Set<String> concepts = new LinkedHashSet<>();
         String lower = content.toLowerCase();
         for (String term : CONCEPT_TERMS) {
             if (lower.contains(term)) concepts.add(term);
