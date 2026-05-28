@@ -7,8 +7,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import java.util.List;
 import java.util.Map;
 
-import org.apache.http.HttpHost;
-import org.elasticsearch.client.RestClient;
+import org.apache.hc.core5.http.HttpHost;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
@@ -22,7 +21,8 @@ import com.agentmemory.mcp.McpToolRegistrar;
 
 import co.elastic.clients.elasticsearch.ElasticsearchClient;
 import co.elastic.clients.json.jackson.JacksonJsonpMapper;
-import co.elastic.clients.transport.rest_client.RestClientTransport;
+import co.elastic.clients.transport.rest5_client.Rest5ClientTransport;
+import co.elastic.clients.transport.rest5_client.low_level.Rest5Client;
 import io.modelcontextprotocol.server.McpServerFeatures;
 import io.modelcontextprotocol.spec.McpSchema;
 
@@ -47,30 +47,30 @@ class McpBenchmarkTest {
 
     @BeforeAll
     static void checkES() throws Exception {
-        try (var client = RestClient.builder(new HttpHost("localhost", 9200, "http")).build()) {
+        try (var client = Rest5Client.builder(new HttpHost("http", "localhost", 9200)).build()) {
             var ec = new ElasticsearchClient(
-                new RestClientTransport(client, new JacksonJsonpMapper()));
+                new Rest5ClientTransport(client, new JacksonJsonpMapper()));
             assertTrue(ec.ping().value(), "ES must be running on localhost:9200");
         }
     }
 
     @AfterAll
     static void cleanup() throws Exception {
-        try (var client = RestClient.builder(new HttpHost("localhost", 9200, "http")).build()) {
+        try (var client = Rest5Client.builder(new HttpHost("http", "localhost", 9200)).build()) {
             var ec = new ElasticsearchClient(
-                new RestClientTransport(client, new JacksonJsonpMapper()));
+                new Rest5ClientTransport(client, new JacksonJsonpMapper()));
             ec.indices().delete(d -> d.index(OBS_INDEX).ignoreUnavailable(true));
         }
     }
 
     @BeforeEach
     void setUp() throws Exception {
-        var restClient = RestClient.builder(new HttpHost("localhost", 9200, "http")).build();
+        var restClient = Rest5Client.builder(new HttpHost("http", "localhost", 9200)).build();
         var localMapper = new com.fasterxml.jackson.databind.ObjectMapper();
         localMapper.registerModule(new com.fasterxml.jackson.datatype.jsr310.JavaTimeModule());
         localMapper.configure(com.fasterxml.jackson.databind.DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false);
         esClient = new ElasticsearchClient(
-            new RestClientTransport(restClient, new JacksonJsonpMapper(localMapper)));
+            new Rest5ClientTransport(restClient, new JacksonJsonpMapper(localMapper)));
 
         var embedding = TestServiceFactory.createEmbeddingService();
         var rerank = TestServiceFactory.createRerankService();
@@ -78,7 +78,8 @@ class McpBenchmarkTest {
 
         esService = new ElasticsearchService(esClient, props, embedding, OBS_INDEX);
         pipeline = new MemoryPipelineService(esService, embedding, rerank, props);
-        toolRegistrar = new McpToolRegistrar(pipeline, esService);
+        var migrationService = new ReindexMigrationService(esClient, embedding, props);
+        toolRegistrar = new McpToolRegistrar(pipeline, esService, migrationService);
     }
 
     private Map<String, McpServerFeatures.SyncToolSpecification> getTools() {

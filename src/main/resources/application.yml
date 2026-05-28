@@ -37,9 +37,9 @@ memory:
   # Closer to 0 = more relevant. Default -5.0 filters out clearly irrelevant results.
   min-rerank-score: -5.0
   # Maximum characters passed to the embedding model (head+tail truncation applied if exceeded).
-  # Default 3000 is conservative for mxbai-embed-large (512 tokens). Increase for larger-context models:
-  # nomic-embed-text (8192 tokens) → ~24000; text-embedding-v4 (8192 tokens) → ~24000.
-  max-embed-chars: 3000
+  # nomic-embed-text supports 8192 tokens → ~20000 chars.
+  # For mxbai-embed-large (512 tokens) use 3000.
+  max-embed-chars: 20000
   consolidation:
     enabled: true
     cron: "0 0 */6 * * *"
@@ -50,8 +50,8 @@ memory:
 # Ollama
 ollama:
   endpoint: http://localhost:11434
-  embeddingModel: mxbai-embed-large
-  dimensions: 1024
+  embeddingModel: nomic-embed-text
+  dimensions: 768
 
 # Rest
 rest: 

@@ -9,8 +9,7 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 
-import org.apache.http.HttpHost;
-import org.elasticsearch.client.RestClient;
+import org.apache.hc.core5.http.HttpHost;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
@@ -27,7 +26,8 @@ import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 
 import co.elastic.clients.elasticsearch.ElasticsearchClient;
 import co.elastic.clients.json.jackson.JacksonJsonpMapper;
-import co.elastic.clients.transport.rest_client.RestClientTransport;
+import co.elastic.clients.transport.rest5_client.Rest5ClientTransport;
+import co.elastic.clients.transport.rest5_client.low_level.Rest5Client;
 
 /**
  * End-to-end benchmark via REST API endpoints.
@@ -69,12 +69,12 @@ class ApiBenchmarkTest {
         mapper.registerModule(new JavaTimeModule());
         mapper.configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false);
 
-        var restClient = RestClient.builder(new HttpHost("localhost", 9200, "http")).build();
+        var restClient = Rest5Client.builder(new HttpHost("http", "localhost", 9200)).build();
         var localMapper = new ObjectMapper();
         localMapper.registerModule(new JavaTimeModule());
         localMapper.configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false);
         esClient = new ElasticsearchClient(
-            new RestClientTransport(restClient, new JacksonJsonpMapper(localMapper)));
+            new Rest5ClientTransport(restClient, new JacksonJsonpMapper(localMapper)));
 
         var embedding = TestServiceFactory.createEmbeddingService();
         var rerank = TestServiceFactory.createRerankService();
@@ -86,9 +86,9 @@ class ApiBenchmarkTest {
 
     @AfterAll
     static void cleanup() throws Exception {
-        var restClient = RestClient.builder(new HttpHost("localhost", 9200, "http")).build();
+        var restClient = Rest5Client.builder(new HttpHost("http", "localhost", 9200)).build();
         var esClient = new ElasticsearchClient(
-            new RestClientTransport(restClient, new JacksonJsonpMapper()));
+            new Rest5ClientTransport(restClient, new JacksonJsonpMapper()));
         esClient.indices().delete(d -> d.index(OBS_INDEX).ignoreUnavailable(true));
         restClient.close();
     }

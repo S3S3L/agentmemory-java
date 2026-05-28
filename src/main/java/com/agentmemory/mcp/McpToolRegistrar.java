@@ -5,6 +5,7 @@ import com.agentmemory.model.SearchResult;
 import com.agentmemory.model.TokenBudget;
 import com.agentmemory.service.ElasticsearchService;
 import com.agentmemory.service.MemoryPipelineService;
+import com.agentmemory.service.ReindexMigrationService;
 import io.modelcontextprotocol.server.McpServerFeatures;
 import io.modelcontextprotocol.spec.McpSchema;
 import org.slf4j.Logger;
@@ -24,10 +25,13 @@ public class McpToolRegistrar {
 
     private final MemoryPipelineService pipeline;
     private final ElasticsearchService esService;
+    private final ReindexMigrationService migrationService;
 
-    public McpToolRegistrar(MemoryPipelineService pipeline, ElasticsearchService esService) {
+    public McpToolRegistrar(MemoryPipelineService pipeline, ElasticsearchService esService,
+                            ReindexMigrationService migrationService) {
         this.pipeline = pipeline;
         this.esService = esService;
+        this.migrationService = migrationService;
     }
 
     @SuppressWarnings("unchecked")
@@ -40,7 +44,8 @@ public class McpToolRegistrar {
             memoryProfile(),
             memoryFileHistory(),
             memoryForget(),
-            memoryPatterns()
+            memoryPatterns(),
+            memoryReindex()
         );
     }
 
@@ -208,6 +213,25 @@ public class McpToolRegistrar {
             } catch (Exception e) {
                 log.error("memory_patterns failed", e);
                 return errorResult("Patterns failed: " + e.getMessage());
+            }
+        });
+    }
+
+    private McpServerFeatures.SyncToolSpecification memoryReindex() {
+        McpSchema.Tool tool = new McpSchema.Tool(
+            "memory_reindex",
+            "Migrate memory indices to a new embedding model/dimension. Creates new indices, re-embeds all content, then swaps aliases. Use dryRun=true first to preview.",
+            "{\"type\":\"object\",\"properties\":{\"dryRun\":{\"type\":\"boolean\",\"default\":true,\"description\":\"If true, only counts documents and validates without writing. Set to false to perform the actual migration.\"}}}"
+        );
+        return new McpServerFeatures.SyncToolSpecification(tool, (exchange, args) -> {
+            boolean dryRun = args.containsKey("dryRun") ? (Boolean) args.get("dryRun") : true;
+            try {
+                log.info("memory_reindex called (dryRun={})", dryRun);
+                String result = migrationService.migrate(dryRun);
+                return new McpSchema.CallToolResult(List.of(new McpSchema.TextContent(result)), false);
+            } catch (Exception e) {
+                log.error("memory_reindex failed", e);
+                return errorResult("Reindex failed: " + e.getMessage());
             }
         });
     }

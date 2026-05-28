@@ -2,12 +2,12 @@ package com.agentmemory.config;
 
 import co.elastic.clients.elasticsearch.ElasticsearchClient;
 import co.elastic.clients.json.jackson.JacksonJsonpMapper;
-import co.elastic.clients.transport.rest_client.RestClientTransport;
+import co.elastic.clients.transport.rest5_client.Rest5ClientTransport;
+import co.elastic.clients.transport.rest5_client.low_level.Rest5Client;
 import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
-import org.apache.http.HttpHost;
-import org.elasticsearch.client.RestClient;
+import org.apache.hc.core5.http.HttpHost;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -34,19 +34,19 @@ public class ElasticsearchConfig {
     private String scheme;
 
     @Bean
-    public RestClient restClient() {
-        return RestClient.builder(
-            new HttpHost(host, port, scheme)
+    public Rest5Client restClient() {
+        return Rest5Client.builder(
+            new HttpHost(scheme, host, port)
         ).build();
     }
 
     @Bean
-    public ElasticsearchClient elasticsearchClient(RestClient restClient) {
+    public ElasticsearchClient elasticsearchClient(Rest5Client restClient) {
         ObjectMapper mapper = new ObjectMapper();
         mapper.registerModule(new JavaTimeModule());
         mapper.configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false);
         return new ElasticsearchClient(
-            new RestClientTransport(restClient, new JacksonJsonpMapper(mapper))
+            new Rest5ClientTransport(restClient, new JacksonJsonpMapper(mapper))
         );
     }
 

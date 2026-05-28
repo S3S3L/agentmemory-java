@@ -19,6 +19,10 @@ import org.junit.jupiter.api.TestMethodOrder;
 import com.agentmemory.config.MemoryProperties;
 
 import co.elastic.clients.elasticsearch.ElasticsearchClient;
+import co.elastic.clients.json.jackson.JacksonJsonpMapper;
+import co.elastic.clients.transport.rest5_client.Rest5ClientTransport;
+import co.elastic.clients.transport.rest5_client.low_level.Rest5Client;
+import org.apache.hc.core5.http.HttpHost;
 
 /**
  * Tests search quality: does hybrid BM25 + kNN + RRF actually find semantically relevant results?
@@ -35,33 +39,24 @@ class SearchQualityTest {
 
     @BeforeAll
     static void checkES() throws Exception {
-        var client = org.elasticsearch.client.RestClient.builder(
-            new org.apache.http.HttpHost("localhost", 9200, "http")).build();
-        var esClient = new co.elastic.clients.elasticsearch.ElasticsearchClient(
-            new co.elastic.clients.transport.rest_client.RestClientTransport(
-                client, new co.elastic.clients.json.jackson.JacksonJsonpMapper()));
+        var client = Rest5Client.builder(new HttpHost("http", "localhost", 9200)).build();
+        var esClient = new ElasticsearchClient(new Rest5ClientTransport(client, new JacksonJsonpMapper()));
         org.junit.jupiter.api.Assertions.assertTrue(esClient.ping().value(), "ES must be running");
         client.close();
     }
 
     @AfterAll
     static void cleanup() throws Exception {
-        var client = org.elasticsearch.client.RestClient.builder(
-            new org.apache.http.HttpHost("localhost", 9200, "http")).build();
-        var esClient = new co.elastic.clients.elasticsearch.ElasticsearchClient(
-            new co.elastic.clients.transport.rest_client.RestClientTransport(
-                client, new co.elastic.clients.json.jackson.JacksonJsonpMapper()));
+        var client = Rest5Client.builder(new HttpHost("http", "localhost", 9200)).build();
+        var esClient = new ElasticsearchClient(new Rest5ClientTransport(client, new JacksonJsonpMapper()));
         esClient.indices().delete(d -> d.index(OBS_INDEX).ignoreUnavailable(true));
         client.close();
     }
 
     @BeforeEach
     void setUp() throws Exception {
-        var restClient = org.elasticsearch.client.RestClient.builder(
-            new org.apache.http.HttpHost("localhost", 9200, "http")).build();
-        esClient = new co.elastic.clients.elasticsearch.ElasticsearchClient(
-            new co.elastic.clients.transport.rest_client.RestClientTransport(
-                restClient, new co.elastic.clients.json.jackson.JacksonJsonpMapper()));
+        var restClient = Rest5Client.builder(new HttpHost("http", "localhost", 9200)).build();
+        esClient = new ElasticsearchClient(new Rest5ClientTransport(restClient, new JacksonJsonpMapper()));
 
         var embedding = TestServiceFactory.createEmbeddingService();
         var rerank = TestServiceFactory.createRerankService();

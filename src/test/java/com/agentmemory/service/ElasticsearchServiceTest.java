@@ -67,9 +67,15 @@ class ElasticsearchServiceTest {
         when(client.search(
             anySearchRequestBuilder(),
             eq(mapDocumentClass())
-        ))
-            .thenReturn(bm25Response)
-            .thenThrow(new IOException("knn unsupported"));
+        )).thenAnswer(invocation -> {
+            @SuppressWarnings("unchecked")
+            Function<SearchRequest.Builder, ObjectBuilder<SearchRequest>> fn = invocation.getArgument(0);
+            SearchRequest request = fn.apply(new SearchRequest.Builder()).build();
+            if (request.knn() != null && !request.knn().isEmpty()) {
+                throw new IOException("knn unsupported");
+            }
+            return bm25Response;
+        });
 
         var results = service.search(
             new MemorySearchRequest("authentication", null, null, null, 5, null),

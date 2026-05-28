@@ -3,8 +3,7 @@ package com.agentmemory;
 import java.io.IOException;
 import java.util.concurrent.CountDownLatch;
 
-import org.apache.http.HttpHost;
-import org.elasticsearch.client.RestClient;
+import org.apache.hc.core5.http.HttpHost;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -18,6 +17,7 @@ import com.agentmemory.model.RerankImpl;
 import com.agentmemory.service.ElasticsearchService;
 import com.agentmemory.service.MemoryConsolidationService;
 import com.agentmemory.service.MemoryPipelineService;
+import com.agentmemory.service.ReindexMigrationService;
 import com.agentmemory.service.embed.DashScopeEmbeddingService;
 import com.agentmemory.service.embed.EmbeddingService;
 import com.agentmemory.service.embed.OllamaEmbeddingService;
@@ -32,7 +32,8 @@ import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 
 import co.elastic.clients.elasticsearch.ElasticsearchClient;
 import co.elastic.clients.json.jackson.JacksonJsonpMapper;
-import co.elastic.clients.transport.rest_client.RestClientTransport;
+import co.elastic.clients.transport.rest5_client.Rest5ClientTransport;
+import co.elastic.clients.transport.rest5_client.low_level.Rest5Client;
 import io.modelcontextprotocol.server.McpServer;
 import io.modelcontextprotocol.server.McpSyncServer;
 import io.modelcontextprotocol.server.transport.StdioServerTransportProvider;
@@ -107,13 +108,13 @@ public class StdioMcpServer {
                 break;
         }
 
-        MemoryProperties memProps = new MemoryProperties();
+        MemoryProperties memProps = yml.treeToValue(config.get("memory"), MemoryProperties.class);
 
         // Elasticsearch client
-        RestClient restClient = RestClient.builder(
-                new HttpHost(esHost, esPort, esScheme)).build();
+        Rest5Client restClient = Rest5Client.builder(
+                new HttpHost(esScheme, esHost, esPort)).build();
         ElasticsearchClient esClient = new ElasticsearchClient(
-                new RestClientTransport(restClient, new JacksonJsonpMapper()));
+                new Rest5ClientTransport(restClient, new JacksonJsonpMapper()));
 
         // Verify ES connection
         try {
@@ -143,7 +144,8 @@ public class StdioMcpServer {
         consolidation.startScheduler();
 
         // MCP tools
-        McpToolRegistrar registrar = new McpToolRegistrar(pipeline, esService);
+        ReindexMigrationService migrationService = new ReindexMigrationService(esClient, embeddingService, memProps);
+        McpToolRegistrar registrar = new McpToolRegistrar(pipeline, esService, migrationService);
 
         // Stdio transport
         StdioServerTransportProvider stdioTransport = new StdioServerTransportProvider(mapper);
