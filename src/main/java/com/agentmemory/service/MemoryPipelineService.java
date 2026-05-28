@@ -84,7 +84,7 @@ public class MemoryPipelineService {
         // Embedding
         String filteredContent = content; // effectively-final alias for lambda
         String embedCacheKey = "model:" + content.strip().toLowerCase();
-        float[] embedding = embeddingCache.get(embedCacheKey, k -> embeddingService.embed(filteredContent));
+        float[] embedding = embeddingCache.get(embedCacheKey, k -> embeddingService.embed(truncateForEmbed(filteredContent)));
 
         String id = UUID.randomUUID().toString();
         Map<String, Object> doc = new LinkedHashMap<>();
@@ -127,7 +127,7 @@ public class MemoryPipelineService {
 
     public List<SearchResult> recall(String query, String projectId, String sessionId) throws IOException {
         String cacheKey = "model:" + query.strip().toLowerCase();
-        float[] queryVector = embeddingCache.get(cacheKey, k -> embeddingService.embed(query));
+        float[] queryVector = embeddingCache.get(cacheKey, k -> embeddingService.embed(truncateForEmbed(query)));
         log.debug("Embedding cache stats: {}", getCacheStats());
 
         var req = new MemorySearchRequest(query, projectId, sessionId, null, props.getTopKFinal(), null);
@@ -170,7 +170,7 @@ public class MemoryPipelineService {
 
     public Map<String, Object> saveInsight(String content, MemoryTier tier, String sessionId, List<String> tags, String projectId) throws IOException {
         String cacheKey = "model:" + content.strip().toLowerCase();
-        float[] embedding = embeddingCache.get(cacheKey, k -> embeddingService.embed(content));
+        float[] embedding = embeddingCache.get(cacheKey, k -> embeddingService.embed(truncateForEmbed(content)));
         String id = UUID.randomUUID().toString();
         Map<String, Object> doc = new LinkedHashMap<>();
         doc.put("id", id);
@@ -266,6 +266,23 @@ public class MemoryPipelineService {
     private String truncate(String s, int maxLen) {
         if (s == null) return null;
         return s.length() > maxLen ? s.substring(0, maxLen) + "..." : s;
+    }
+
+    /**
+     * Truncate text to fit within the embedding model's context window.
+     * Uses a head+tail strategy: keeps the first 2/3 and last 1/3 of the budget,
+     * joined by a separator. This preserves both the leading context (tool name,
+     * input) and the trailing context (end of output, error message).
+     */
+    private String truncateForEmbed(String text) {
+        if (text == null) return "";
+        int max = props.getMaxEmbedChars();
+        if (text.length() <= max) return text;
+        int headLen = (max * 2) / 3;
+        int tailLen = max - headLen;
+        String truncated = text.substring(0, headLen) + "\n...[truncated]...\n" + text.substring(text.length() - tailLen);
+        log.debug("Truncated text for embedding: {} → {} chars", text.length(), truncated.length());
+        return truncated;
     }
 
     private List<Double> toDoubleList(float[] arr) {

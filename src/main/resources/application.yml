@@ -36,6 +36,10 @@ memory:
   # Rerank scores are negative; results below this threshold are discarded as low-relevance noise.
   # Closer to 0 = more relevant. Default -5.0 filters out clearly irrelevant results.
   min-rerank-score: -5.0
+  # Maximum characters passed to the embedding model (head+tail truncation applied if exceeded).
+  # Default 3000 is conservative for mxbai-embed-large (512 tokens). Increase for larger-context models:
+  # nomic-embed-text (8192 tokens) → ~24000; text-embedding-v4 (8192 tokens) → ~24000.
+  max-embed-chars: 3000
   consolidation:
     enabled: true
     cron: "0 0 */6 * * *"

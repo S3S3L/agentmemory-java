@@ -15,6 +15,13 @@ public class MemoryProperties {
     private int topKFinal = 10;
     /** Minimum rerank score to include a result. Rerank scores are negative; closer to 0 = more relevant. */
     private double minRerankScore = -5.0;
+    /**
+     * Maximum characters to pass to the embedding model.
+     * Uses head+tail truncation to preserve both start and end context.
+     * Conservative default (3000) is safe for short-context models like mxbai-embed-large (512 tokens).
+     * Increase for models with larger context windows (e.g., nomic-embed-text: 8192 tokens → ~24000 chars).
+     */
+    private int maxEmbedChars = 3000;
     private Consolidation consolidation = new Consolidation();
     private Decay decay = new Decay();
 
@@ -34,6 +41,8 @@ public class MemoryProperties {
     public void setTopKFinal(int topKFinal) { this.topKFinal = topKFinal; }
     public double getMinRerankScore() { return minRerankScore; }
     public void setMinRerankScore(double minRerankScore) { this.minRerankScore = minRerankScore; }
+    public int getMaxEmbedChars() { return maxEmbedChars; }
+    public void setMaxEmbedChars(int maxEmbedChars) { this.maxEmbedChars = maxEmbedChars; }
     public Consolidation getConsolidation() { return consolidation; }
     public void setConsolidation(Consolidation consolidation) { this.consolidation = consolidation; }
     public Decay getDecay() { return decay; }
