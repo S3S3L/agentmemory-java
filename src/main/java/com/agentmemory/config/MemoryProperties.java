@@ -18,10 +18,10 @@ public class MemoryProperties {
     /**
      * Maximum characters to pass to the embedding model.
      * Uses head+tail truncation to preserve both start and end context.
-     * Conservative default (3000) is safe for short-context models like mxbai-embed-large (512 tokens).
-     * Increase for models with larger context windows (e.g., nomic-embed-text: 8192 tokens → ~24000 chars).
+     * Default targets larger-context embedding models like nomic-embed-text (8192 tokens → ~24000 chars).
+     * Lower to around 3000 for short-context models like mxbai-embed-large (512 tokens).
      */
-    private int maxEmbedChars = 3000;
+    private int maxEmbedChars = 24000;
     private Consolidation consolidation = new Consolidation();
     private Decay decay = new Decay();
 

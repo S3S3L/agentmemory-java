@@ -37,9 +37,9 @@ memory:
   # Closer to 0 = more relevant. Default -5.0 filters out clearly irrelevant results.
   min-rerank-score: -5.0
   # Maximum characters passed to the embedding model (head+tail truncation applied if exceeded).
-  # nomic-embed-text supports 8192 tokens → ~20000 chars.
+  # nomic-embed-text supports 8192 tokens → ~24000 chars.
   # For mxbai-embed-large (512 tokens) use 3000.
-  max-embed-chars: 20000
+  max-embed-chars: 24000
   consolidation:
     enabled: true
     cron: "0 0 */6 * * *"
