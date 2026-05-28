@@ -7,8 +7,8 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
-import java.util.LinkedHashSet;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -17,8 +17,7 @@ import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
 
-import com.github.benmanes.caffeine.cache.Cache;
-import com.github.benmanes.caffeine.cache.Caffeine;
+import com.agentmemory.model.SearchResult;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -27,9 +26,10 @@ import org.springframework.stereotype.Service;
 import com.agentmemory.config.MemoryProperties;
 import com.agentmemory.model.MemorySearchRequest;
 import com.agentmemory.model.MemoryTier;
-import com.agentmemory.model.SearchResult;
 import com.agentmemory.service.embed.EmbeddingService;
 import com.agentmemory.service.rerank.RerankService;
+import com.github.benmanes.caffeine.cache.Cache;
+import com.github.benmanes.caffeine.cache.Caffeine;
 
 @Service
 public class MemoryPipelineService {
@@ -157,7 +157,10 @@ public class MemoryPipelineService {
                             contentToRerankScore.getOrDefault(r.content(), 0.0)
                         ))
                         .sorted(Comparator.comparingDouble(SearchResult::rerankScore).reversed())
+                        .filter(r -> r.rerankScore() >= props.getMinRerankScore())
                         .toList();
+                    log.debug("After rerank threshold filter (minScore={}): {} results remain",
+                        props.getMinRerankScore(), results.size());
                 }
             }
         }

@@ -13,6 +13,8 @@ public class MemoryProperties {
     private int topKBm25 = 40;
     private int topKVector = 40;
     private int topKFinal = 10;
+    /** Minimum rerank score to include a result. Rerank scores are negative; closer to 0 = more relevant. */
+    private double minRerankScore = -5.0;
     private Consolidation consolidation = new Consolidation();
     private Decay decay = new Decay();
 
@@ -30,6 +32,8 @@ public class MemoryProperties {
     public void setTopKVector(int topKVector) { this.topKVector = topKVector; }
     public int getTopKFinal() { return topKFinal; }
     public void setTopKFinal(int topKFinal) { this.topKFinal = topKFinal; }
+    public double getMinRerankScore() { return minRerankScore; }
+    public void setMinRerankScore(double minRerankScore) { this.minRerankScore = minRerankScore; }
     public Consolidation getConsolidation() { return consolidation; }
     public void setConsolidation(Consolidation consolidation) { this.consolidation = consolidation; }
     public Decay getDecay() { return decay; }

@@ -33,6 +33,9 @@ memory:
   top-k-bm25: 20
   top-k-vector: 20
   top-k-final: 10
+  # Rerank scores are negative; results below this threshold are discarded as low-relevance noise.
+  # Closer to 0 = more relevant. Default -5.0 filters out clearly irrelevant results.
+  min-rerank-score: -5.0
   consolidation:
     enabled: true
     cron: "0 0 */6 * * *"
