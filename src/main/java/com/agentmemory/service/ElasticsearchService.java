@@ -1,6 +1,7 @@
 package com.agentmemory.service;
 
 import java.io.IOException;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
@@ -11,6 +12,8 @@ import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+
+import co.elastic.clients.json.JsonData;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -278,6 +281,29 @@ public class ElasticsearchService {
 
     public void deleteMemory(String id) throws IOException {
         client.delete(d -> d.index(observationIndex).id(id));
+    }
+
+    public void bulkUpdateAccessStats(List<String> ids) throws IOException {
+        if (ids == null || ids.isEmpty()) return;
+        String nowTs = Instant.now().toString();
+        var ops = new ArrayList<co.elastic.clients.elasticsearch.core.bulk.BulkOperation>();
+        for (String id : ids) {
+            ops.add(co.elastic.clients.elasticsearch.core.bulk.BulkOperation.of(o -> o
+                .update(u -> u
+                    .index(observationIndex)
+                    .id(id)
+                    .action(a -> a
+                        .script(s -> s
+                            .source(src -> src.scriptString(
+                                "ctx._source.accessCount = (ctx._source.accessCount ?: 0) + 1; ctx._source.lastAccessed = params.ts"))
+                            .params(Map.of("ts", JsonData.of(nowTs)))
+                        )
+                    )
+                )
+            ));
+        }
+        client.bulk(b -> b.operations(ops));
+        log.debug("Updated access stats for {} documents", ids.size());
     }
 
     public void batchSave(List<Map<String, Object>> documents, List<String> ids) throws IOException {

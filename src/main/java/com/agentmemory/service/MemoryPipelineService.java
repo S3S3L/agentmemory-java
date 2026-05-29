@@ -165,6 +165,16 @@ public class MemoryPipelineService {
             }
         }
 
+        // Best-effort: update access stats for every recalled document
+        if (!results.isEmpty()) {
+            List<String> ids = results.stream().map(SearchResult::id).filter(Objects::nonNull).toList();
+            try {
+                esService.bulkUpdateAccessStats(ids);
+            } catch (Exception e) {
+                log.warn("Failed to update access stats for {} documents: {}", ids.size(), e.getMessage());
+            }
+        }
+
         return results;
     }
 
