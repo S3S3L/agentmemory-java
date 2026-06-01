@@ -51,18 +51,24 @@ public class MemoryProperties {
     public static class Consolidation {
         private boolean enabled = true;
         private String cron = "0 0 */6 * * *";
+        private long intervalMinutes = 60;
         public boolean isEnabled() { return enabled; }
         public void setEnabled(boolean enabled) { this.enabled = enabled; }
         public String getCron() { return cron; }
         public void setCron(String cron) { this.cron = cron; }
+        public long getIntervalMinutes() { return intervalMinutes; }
+        public void setIntervalMinutes(long intervalMinutes) { this.intervalMinutes = intervalMinutes; }
     }
 
     public static class Decay {
         private boolean enabled = true;
         private String cron = "0 0 2 * * *";
+        private long intervalMinutes = 360;
         public boolean isEnabled() { return enabled; }
         public void setEnabled(boolean enabled) { this.enabled = enabled; }
         public String getCron() { return cron; }
         public void setCron(String cron) { this.cron = cron; }
+        public long getIntervalMinutes() { return intervalMinutes; }
+        public void setIntervalMinutes(long intervalMinutes) { this.intervalMinutes = intervalMinutes; }
     }
 }

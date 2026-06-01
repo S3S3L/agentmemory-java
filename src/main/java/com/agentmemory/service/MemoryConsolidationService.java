@@ -9,6 +9,9 @@ import org.slf4j.LoggerFactory;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 
+import com.agentmemory.config.MemoryProperties;
+import com.agentmemory.model.LifecycleJobState;
+
 import java.time.Duration;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
@@ -35,16 +38,23 @@ public class MemoryConsolidationService {
 
     private final ElasticsearchClient esClient;
     private final LifecycleCoordinator coordinator;
+    private final MemoryProperties memProps;
     private ScheduledExecutorService scheduler;
 
     @Autowired
-    public MemoryConsolidationService(ElasticsearchClient esClient, LifecycleCoordinator coordinator) {
+    public MemoryConsolidationService(ElasticsearchClient esClient, LifecycleCoordinator coordinator,
+                                      MemoryProperties memProps) {
         this.esClient = esClient;
         this.coordinator = coordinator;
+        this.memProps = memProps;
+    }
+
+    public MemoryConsolidationService(ElasticsearchClient esClient, LifecycleCoordinator coordinator) {
+        this(esClient, coordinator, null);
     }
 
     public MemoryConsolidationService(ElasticsearchClient esClient) {
-        this(esClient, null);
+        this(esClient, null, null);
     }
 
     /**
@@ -73,6 +83,10 @@ public class MemoryConsolidationService {
 
     @Scheduled(cron = "${memory.consolidation.cron:0 0 */6 * * *}")
     public void consolidate() {
+        if (memProps != null && !memProps.getConsolidation().isEnabled()) {
+            log.debug("Consolidation is disabled, skipping.");
+            return;
+        }
         if (coordinator != null && !coordinator.acquireLease("memory-consolidation", Duration.ofMinutes(10))) {
             log.debug("Skipping consolidation: lease held by another instance");
             return;
@@ -94,6 +108,10 @@ public class MemoryConsolidationService {
 
     @Scheduled(cron = "${memory.decay.cron:0 0 2 * * *}")
     public void applyDecay() {
+        if (memProps != null && !memProps.getDecay().isEnabled()) {
+            log.debug("Decay is disabled, skipping.");
+            return;
+        }
         if (coordinator != null && !coordinator.acquireLease("memory-decay", Duration.ofMinutes(10))) {
             log.debug("Skipping decay sweep: lease held by another instance");
             return;
@@ -224,6 +242,54 @@ public class MemoryConsolidationService {
             }
         }
         log.info("Detected {} potential contradictions", contradictions);
+    }
+
+    // --- Scheduling helpers ---
+
+    /**
+     * Returns true if the job has never completed, or completed more than {@code intervalMinutes} ago.
+     */
+    public boolean isJobDue(String jobName, long intervalMinutes) {
+        if (coordinator == null) return true;
+        Optional<LifecycleJobState> state = coordinator.getJobState(jobName);
+        if (state.isEmpty() || state.get().getLastCompletedAt() == null) return true;
+        return state.get().getLastCompletedAt().isBefore(
+                Instant.now().minus(intervalMinutes, ChronoUnit.MINUTES));
+    }
+
+    /**
+     * Returns estimated counts of memories that would be affected by consolidation/decay,
+     * without mutating any data.
+     */
+    public Map<String, Object> dryRunStats() {
+        Map<String, Object> stats = new java.util.LinkedHashMap<>();
+        try {
+            stats.put("workingToEpisodicCandidates",
+                    countTierOlderThan("WORKING", Instant.now().minus(1, ChronoUnit.HOURS)));
+            stats.put("episodicToSemanticCandidates",
+                    countTierOlderThan("EPISODIC", Instant.now().minus(7, ChronoUnit.DAYS)));
+            stats.put("semanticToProceduralCandidates",
+                    countTierOlderThan("SEMANTIC", Instant.now().minus(30, ChronoUnit.DAYS)));
+            // WORKING half-life is 1 day; eviction threshold is 3x = 3 days
+            stats.put("staleWorkingCandidates",
+                    countTierOlderThan("WORKING", Instant.now().minus(3, ChronoUnit.DAYS)));
+        } catch (Exception e) {
+            log.warn("dryRunStats query failed: {}", e.getMessage());
+            stats.put("error", e.getMessage());
+        }
+        return stats;
+    }
+
+    private long countTierOlderThan(String tier, Instant cutoff) throws java.io.IOException {
+        var resp = esClient.count(c -> c
+                .index(OBS_INDEX)
+                .query(q -> q.bool(b -> b
+                        .must(m -> m.term(t -> t.field("tier").value(tier)))
+                        .must(m -> m.range(r -> r.date(d -> d
+                                .field("timestamp")
+                                .lt(cutoff.toString()))))
+                )));
+        return resp.count();
     }
 
     // --- Helpers ---

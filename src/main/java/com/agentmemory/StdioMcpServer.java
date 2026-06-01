@@ -2,6 +2,9 @@ package com.agentmemory;
 
 import java.io.IOException;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
 
 import org.apache.hc.core5.http.HttpHost;
 import org.slf4j.Logger;
@@ -140,14 +143,47 @@ public class StdioMcpServer {
         MemoryPipelineService pipeline = new MemoryPipelineService(esService, embeddingService, rerankService,
                 memProps);
 
-        // Consolidation (scheduled tasks) - start in background
+        // Consolidation (lifecycle jobs) - multi-trigger scheduler
         LifecycleCoordinator coordinator = new LifecycleCoordinator(esClient);
-        MemoryConsolidationService consolidation = new MemoryConsolidationService(esClient, coordinator);
-        consolidation.startScheduler();
+        MemoryConsolidationService consolidation = new MemoryConsolidationService(esClient, coordinator, memProps);
+
+        boolean consolidationEnabled = memProps.getConsolidation().isEnabled();
+        boolean decayEnabled = memProps.getDecay().isEnabled();
+        long consolidationInterval = memProps.getConsolidation().getIntervalMinutes();
+        long decayInterval = memProps.getDecay().getIntervalMinutes();
+
+        ScheduledExecutorService lifecycleScheduler = Executors.newSingleThreadScheduledExecutor(r -> {
+            Thread t = new Thread(r, "lifecycle-scheduler");
+            t.setDaemon(true);
+            return t;
+        });
+
+        // Startup catch-up: run immediately if overdue
+        if (consolidationEnabled && consolidation.isJobDue("memory-consolidation", consolidationInterval)) {
+            lifecycleScheduler.submit(consolidation::consolidate);
+        }
+        if (decayEnabled && consolidation.isJobDue("memory-decay", decayInterval)) {
+            lifecycleScheduler.submit(consolidation::applyDecay);
+        }
+
+        // Short poll every 2 minutes: only trigger if interval has elapsed
+        final long pollMinutes = 2;
+        lifecycleScheduler.scheduleAtFixedRate(() -> {
+            try {
+                if (consolidationEnabled && consolidation.isJobDue("memory-consolidation", consolidationInterval)) {
+                    consolidation.consolidate();
+                }
+                if (decayEnabled && consolidation.isJobDue("memory-decay", decayInterval)) {
+                    consolidation.applyDecay();
+                }
+            } catch (Exception ex) {
+                log.error("Lifecycle poll error", ex);
+            }
+        }, pollMinutes, pollMinutes, TimeUnit.MINUTES);
 
         // MCP tools
         ReindexMigrationService migrationService = new ReindexMigrationService(esClient, embeddingService, memProps);
-        McpToolRegistrar registrar = new McpToolRegistrar(pipeline, esService, migrationService);
+        McpToolRegistrar registrar = new McpToolRegistrar(pipeline, esService, migrationService, consolidation, coordinator);
 
         // Stdio transport
         StdioServerTransportProvider stdioTransport = new StdioServerTransportProvider(mapper);
@@ -166,6 +202,7 @@ public class StdioMcpServer {
         CountDownLatch latch = new CountDownLatch(1);
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
             log.info("Shutting down MCP server...");
+            lifecycleScheduler.shutdownNow();
             try {
                 server.close();
                 restClient.close();

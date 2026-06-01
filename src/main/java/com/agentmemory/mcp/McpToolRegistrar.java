@@ -1,19 +1,25 @@
 package com.agentmemory.mcp;
 
+import com.agentmemory.model.LifecycleJobState;
 import com.agentmemory.model.MemoryTier;
 import com.agentmemory.model.SearchResult;
 import com.agentmemory.model.TokenBudget;
 import com.agentmemory.service.ElasticsearchService;
+import com.agentmemory.service.LifecycleCoordinator;
+import com.agentmemory.service.MemoryConsolidationService;
 import com.agentmemory.service.MemoryPipelineService;
 import com.agentmemory.service.ReindexMigrationService;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import io.modelcontextprotocol.server.McpServerFeatures;
 import io.modelcontextprotocol.spec.McpSchema;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 
 /**
  * Registers all MCP tools with their schemas and handlers.
@@ -22,16 +28,29 @@ import java.util.Map;
 public class McpToolRegistrar {
 
     private static final Logger log = LoggerFactory.getLogger(McpToolRegistrar.class);
+    private static final ObjectMapper JSON = new ObjectMapper();
 
     private final MemoryPipelineService pipeline;
     private final ElasticsearchService esService;
     private final ReindexMigrationService migrationService;
+    private final MemoryConsolidationService consolidationService;
+    private final LifecycleCoordinator coordinator;
 
     public McpToolRegistrar(MemoryPipelineService pipeline, ElasticsearchService esService,
-                            ReindexMigrationService migrationService) {
+                            ReindexMigrationService migrationService,
+                            MemoryConsolidationService consolidationService,
+                            LifecycleCoordinator coordinator) {
         this.pipeline = pipeline;
         this.esService = esService;
         this.migrationService = migrationService;
+        this.consolidationService = consolidationService;
+        this.coordinator = coordinator;
+    }
+
+    /** Convenience constructor for callers that don't need lifecycle tools. */
+    public McpToolRegistrar(MemoryPipelineService pipeline, ElasticsearchService esService,
+                            ReindexMigrationService migrationService) {
+        this(pipeline, esService, migrationService, null, null);
     }
 
     @SuppressWarnings("unchecked")
@@ -45,7 +64,9 @@ public class McpToolRegistrar {
             memoryFileHistory(),
             memoryForget(),
             memoryPatterns(),
-            memoryReindex()
+            memoryReindex(),
+            memoryLifecycleStatus(),
+            memoryLifecycleRun()
         );
     }
 
@@ -232,6 +253,84 @@ public class McpToolRegistrar {
             } catch (Exception e) {
                 log.error("memory_reindex failed", e);
                 return errorResult("Reindex failed: " + e.getMessage());
+            }
+        });
+    }
+
+    private McpServerFeatures.SyncToolSpecification memoryLifecycleStatus() {
+        McpSchema.Tool tool = new McpSchema.Tool(
+            "memory_lifecycle_status",
+            "Return current lifecycle job state for consolidation and decay jobs",
+            "{\"type\":\"object\",\"properties\":{}}"
+        );
+        return new McpServerFeatures.SyncToolSpecification(tool, (exchange, args) -> {
+            if (coordinator == null || consolidationService == null) {
+                return errorResult("Lifecycle coordinator not available in this mode");
+            }
+            try {
+                Map<String, Object> result = new LinkedHashMap<>();
+                long[] defaultIntervals = {60, 360};
+                String[] jobs = {"memory-consolidation", "memory-decay"};
+                for (int i = 0; i < jobs.length; i++) {
+                    String jobName = jobs[i];
+                    long interval = defaultIntervals[i];
+                    Map<String, Object> info = new LinkedHashMap<>();
+                    Optional<LifecycleJobState> stateOpt = coordinator.getJobState(jobName);
+                    if (stateOpt.isPresent()) {
+                        LifecycleJobState s = stateOpt.get();
+                        info.put("leaseOwner", s.getLeaseOwner());
+                        info.put("leaseUntil", s.getLeaseUntil() != null ? s.getLeaseUntil().toString() : null);
+                        info.put("lastStartedAt", s.getLastStartedAt() != null ? s.getLastStartedAt().toString() : null);
+                        info.put("lastCompletedAt", s.getLastCompletedAt() != null ? s.getLastCompletedAt().toString() : null);
+                        info.put("lastError", s.getLastError());
+                    } else {
+                        info.put("note", "No state found");
+                    }
+                    info.put("isDue", consolidationService.isJobDue(jobName, interval));
+                    result.put(jobName, info);
+                }
+                return new McpSchema.CallToolResult(
+                    List.of(new McpSchema.TextContent(JSON.writeValueAsString(result))), false);
+            } catch (Exception e) {
+                log.error("memory_lifecycle_status failed", e);
+                return errorResult("Lifecycle status failed: " + e.getMessage());
+            }
+        });
+    }
+
+    private McpServerFeatures.SyncToolSpecification memoryLifecycleRun() {
+        McpSchema.Tool tool = new McpSchema.Tool(
+            "memory_lifecycle_run",
+            "Trigger lifecycle jobs or get dry-run statistics without mutating data",
+            "{\"type\":\"object\",\"properties\":{\"job\":{\"type\":\"string\",\"enum\":[\"consolidation\",\"decay\",\"all\"],\"description\":\"Which job to run\"},\"dryRun\":{\"type\":\"boolean\",\"default\":true,\"description\":\"If true, return candidate counts without mutating\"}},\"required\":[\"job\"]}"
+        );
+        return new McpServerFeatures.SyncToolSpecification(tool, (exchange, args) -> {
+            if (consolidationService == null) {
+                return errorResult("Consolidation service not available in this mode");
+            }
+            String job = (String) args.getOrDefault("job", "all");
+            boolean dryRun = args.containsKey("dryRun") ? (Boolean) args.get("dryRun") : true;
+            try {
+                if (dryRun) {
+                    Map<String, Object> stats = consolidationService.dryRunStats();
+                    return new McpSchema.CallToolResult(
+                        List.of(new McpSchema.TextContent("Dry-run stats: " + JSON.writeValueAsString(stats))), false);
+                } else {
+                    StringBuilder sb = new StringBuilder();
+                    if ("consolidation".equals(job) || "all".equals(job)) {
+                        consolidationService.consolidate();
+                        sb.append("Consolidation triggered. ");
+                    }
+                    if ("decay".equals(job) || "all".equals(job)) {
+                        consolidationService.applyDecay();
+                        sb.append("Decay triggered.");
+                    }
+                    return new McpSchema.CallToolResult(
+                        List.of(new McpSchema.TextContent(sb.toString().trim())), false);
+                }
+            } catch (Exception e) {
+                log.error("memory_lifecycle_run failed", e);
+                return errorResult("Lifecycle run failed: " + e.getMessage());
             }
         });
     }
