@@ -1,9 +1,11 @@
 package com.agentmemory.service;
 
 import co.elastic.clients.elasticsearch.ElasticsearchClient;
+import co.elastic.clients.elasticsearch._types.FieldValue;
 import co.elastic.clients.elasticsearch._types.SortOrder;
 import co.elastic.clients.elasticsearch.core.SearchResponse;
 import co.elastic.clients.elasticsearch.core.search.Hit;
+import co.elastic.clients.json.JsonData;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.scheduling.annotation.Scheduled;
@@ -27,18 +29,20 @@ import org.springframework.beans.factory.annotation.Autowired;
  * 4-tier memory consolidation + Ebbinghaus decay.
  *
  * Tiers: WORKING (raw) → EPISODIC (session summary) → SEMANTIC (facts) → PROCEDURAL (patterns)
- * Decay: half-life per tier (30d/60d/90d), importance boosts via accessCount.
- * Contradiction: same file+tool combo with many updates → mark older ones as possibly-stale.
+ * Decay: configurable stale-day thresholds per tier; soft-delete preferred over hard-delete.
+ * Contradiction: same file+tool combo with many updates → append "possibly-stale" tag via Painless script.
  */
+@SuppressWarnings({"unchecked", "rawtypes"})
 @Service
 public class MemoryConsolidationService {
 
     private static final Logger log = LoggerFactory.getLogger(MemoryConsolidationService.class);
     private static final String OBS_INDEX = "memory-observations";
+    private static final int PAGE_SIZE = 100;
 
     private final ElasticsearchClient esClient;
     private final LifecycleCoordinator coordinator;
-    private final MemoryProperties memProps;
+    final MemoryProperties memProps;
     private ScheduledExecutorService scheduler;
 
     @Autowired
@@ -132,92 +136,155 @@ public class MemoryConsolidationService {
 
     // --- Consolidation ---
 
-    private void promoteToEpisodic() throws java.io.IOException {
-        Instant cutoff = Instant.now().minus(1, ChronoUnit.HOURS);
-        promoteTier("WORKING", "EPISODIC", cutoff);
+    void promoteToEpisodic() throws java.io.IOException {
+        var p = promotion();
+        Instant ageCutoff = Instant.now().minus(p.getWorkingToEpisodicDays(), ChronoUnit.DAYS);
+        int minAccess = p.getWorkingToEpisodicAccessCount();
+        // WORKING → EPISODIC: age >= threshold OR accessCount >= minAccess
+        promoteByTierPaginated("WORKING", "EPISODIC", ageCutoff, minAccess, true);
     }
 
-    private void promoteToSemantic() throws java.io.IOException {
-        Instant cutoff = Instant.now().minus(7, ChronoUnit.DAYS);
-        promoteWithAccessThreshold("EPISODIC", "SEMANTIC", cutoff, 3);
+    void promoteToSemantic() throws java.io.IOException {
+        var p = promotion();
+        Instant ageCutoff = Instant.now().minus(p.getEpisodicToSemanticDays(), ChronoUnit.DAYS);
+        int minAccess = p.getEpisodicToSemanticAccessCount();
+        // EPISODIC → SEMANTIC: age >= threshold AND accessCount >= minAccess
+        promoteByTierPaginated("EPISODIC", "SEMANTIC", ageCutoff, minAccess, false);
     }
 
-    private void promoteToProcedural() throws java.io.IOException {
-        Instant cutoff = Instant.now().minus(30, ChronoUnit.DAYS);
-        promoteWithAccessThreshold("SEMANTIC", "PROCEDURAL", cutoff, 10);
+    void promoteToProcedural() throws java.io.IOException {
+        int minAccess = promotion().getSemanticToProceduralAccessCount();
+        // SEMANTIC → PROCEDURAL: accessCount >= minAccess only (no age requirement)
+        promoteByAccessCountPaginated("SEMANTIC", "PROCEDURAL", minAccess);
     }
 
-    private void promoteTier(String from, String to, Instant cutoff) throws java.io.IOException {
-        var docs = getMemoriesByTier(from, 100);
+    /**
+     * Paginated promotion based on age and/or access count.
+     *
+     * @param ageOrAccess if true, qualify when age OR access meets threshold (OR logic);
+     *                    if false, both age AND access must meet threshold (AND logic)
+     */
+    private void promoteByTierPaginated(String from, String to, Instant ageCutoff,
+                                        int minAccess, boolean ageOrAccess) throws java.io.IOException {
+        List<FieldValue> searchAfter = null;
         int promoted = 0;
-        for (var doc : docs) {
-            String ts = (String) doc.get("timestamp");
-            if (ts != null && Instant.parse(ts).isBefore(cutoff)) {
-                String id = (String) doc.get("id");
-                esClient.update(u -> u
-                    .index(OBS_INDEX)
-                    .id(id)
-                    .doc(Map.of("tier", to)), Map.class);
-                promoted++;
+        while (true) {
+            var page = searchByTierPage(from, PAGE_SIZE, searchAfter);
+            if (page.isEmpty()) break;
+            for (var hit : page) {
+                Map<String, Object> doc = hit.source();
+                if (doc == null) continue;
+                String ts = (String) doc.get("timestamp");
+                Number accessCountNum = (Number) doc.get("accessCount");
+                int access = accessCountNum != null ? accessCountNum.intValue() : 0;
+                boolean ageQualifies = ts != null && Instant.parse(ts).isBefore(ageCutoff);
+                boolean accessQualifies = access >= minAccess;
+                boolean shouldPromote = ageOrAccess ? (ageQualifies || accessQualifies)
+                                                    : (ageQualifies && accessQualifies);
+                if (shouldPromote) {
+                    String id = hit.id();
+                    esClient.update(u -> u
+                        .index(OBS_INDEX)
+                        .id(id)
+                        .doc(Map.of("tier", to)), Map.class);
+                    promoted++;
+                }
             }
+            if (page.size() < PAGE_SIZE) break;
+            searchAfter = page.get(page.size() - 1).sort();
         }
-        log.info("Promoted {} memories from {} → {}", promoted, from, to);
+        log.info("Promoted {} memories from {} → {} (ageOrAccess={})", promoted, from, to, ageOrAccess);
     }
 
-    private void promoteWithAccessThreshold(String from, String to, Instant cutoff, int minAccess) throws java.io.IOException {
-        var docs = getMemoriesByTier(from, 100);
+    /** Paginated promotion based solely on access count (no age gate). */
+    private void promoteByAccessCountPaginated(String from, String to, int minAccess) throws java.io.IOException {
+        List<FieldValue> searchAfter = null;
         int promoted = 0;
-        for (var doc : docs) {
-            String ts = (String) doc.get("timestamp");
-            Number accessCount = (Number) doc.get("accessCount");
-            if (ts != null && Instant.parse(ts).isBefore(cutoff)
-                && accessCount != null && accessCount.intValue() >= minAccess) {
-                String id = (String) doc.get("id");
-                esClient.update(u -> u
-                    .index(OBS_INDEX)
-                    .id(id)
-                    .doc(Map.of("tier", to)), Map.class);
-                promoted++;
+        while (true) {
+            var page = searchByTierPage(from, PAGE_SIZE, searchAfter);
+            if (page.isEmpty()) break;
+            for (var hit : page) {
+                Map<String, Object> doc = hit.source();
+                if (doc == null) continue;
+                Number accessCountNum = (Number) doc.get("accessCount");
+                int access = accessCountNum != null ? accessCountNum.intValue() : 0;
+                if (access >= minAccess) {
+                    String id = hit.id();
+                    esClient.update(u -> u
+                        .index(OBS_INDEX)
+                        .id(id)
+                        .doc(Map.of("tier", to)), Map.class);
+                    promoted++;
+                }
             }
+            if (page.size() < PAGE_SIZE) break;
+            searchAfter = page.get(page.size() - 1).sort();
         }
         log.info("Promoted {} memories from {} → {} (minAccess={})", promoted, from, to, minAccess);
     }
 
     // --- Decay ---
 
-    private void evictStaleMemories() throws java.io.IOException {
-        Map<String, Double> halfLives = Map.of(
-            "WORKING", 1.0,
-            "EPISODIC", 30.0,
-            "SEMANTIC", 60.0,
-            "PROCEDURAL", 90.0
-        );
+    void evictStaleMemories() throws java.io.IOException {
+        int staleEpisodicDays = memProps != null ? memProps.getDecay().getStaleEpisodicDays() : 30;
+        int staleSemanticDays = memProps != null ? memProps.getDecay().getStaleSemanticDays() : 90;
+        boolean softDelete = memProps == null || memProps.getDecay().isSoftDelete();
 
-        int evicted = 0;
-        for (var entry : halfLives.entrySet()) {
-            String tier = entry.getKey();
-            double halfLifeDays = entry.getValue();
-            var docs = getMemoriesByTier(tier, 200);
-
-            for (var doc : docs) {
-                double importance = importanceScore(doc);
-                double effectiveHalfLife = halfLifeDays / Math.max(0.1, importance);
-                String ts = (String) doc.get("timestamp");
-                if (ts != null) {
-                    double ageDays = Duration.between(Instant.parse(ts), Instant.now()).toDays();
-                    if (ageDays > effectiveHalfLife * 3) {
-                        String id = (String) doc.get("id");
-                        esClient.delete(d -> d.index(OBS_INDEX).id(id));
-                        evicted++;
-                    }
-                }
-            }
-        }
-        log.info("Evicted {} stale memories", evicted);
+        evictStaleTierPaginated("WORKING", 3, softDelete);
+        evictStaleTierPaginated("EPISODIC", staleEpisodicDays, softDelete);
+        evictStaleTierPaginated("SEMANTIC", staleSemanticDays, softDelete);
+        evictStaleTierPaginated("PROCEDURAL", staleSemanticDays * 2, softDelete);
     }
 
-    private void detectContradictions() throws java.io.IOException {
-        var allDocs = getAllMemories(500);
+    private void evictStaleTierPaginated(String tier, int staleDays, boolean softDelete) throws java.io.IOException {
+        Instant cutoff = Instant.now().minus(staleDays, ChronoUnit.DAYS);
+        List<FieldValue> searchAfter = null;
+        int evicted = 0;
+        while (true) {
+            var page = searchByTierPage(tier, PAGE_SIZE, searchAfter);
+            if (page.isEmpty()) break;
+            for (var hit : page) {
+                Map<String, Object> doc = hit.source();
+                if (doc == null) continue;
+                String ts = (String) doc.get("timestamp");
+                if (ts != null && Instant.parse(ts).isBefore(cutoff)) {
+                    String id = hit.id();
+                    if (softDelete) {
+                        esClient.update(u -> u
+                            .index(OBS_INDEX)
+                            .id(id)
+                            .doc(Map.of("isActive", false)), Map.class);
+                    } else {
+                        esClient.delete(d -> d.index(OBS_INDEX).id(id));
+                    }
+                    evicted++;
+                }
+            }
+            if (page.size() < PAGE_SIZE) break;
+            searchAfter = page.get(page.size() - 1).sort();
+        }
+        log.info("Evicted {} stale {} memories (softDelete={})", evicted, tier, softDelete);
+    }
+
+    void detectContradictions() throws java.io.IOException {
+        // Paginate over all docs, accumulate for grouping
+        List<Map<String, Object>> allDocs = new ArrayList<>();
+        List<FieldValue> searchAfter = null;
+        while (true) {
+            var page = getAllMemoriesPage(PAGE_SIZE, searchAfter);
+            if (page.isEmpty()) break;
+            for (var hit : page) {
+                Map<String, Object> src = hit.source();
+                if (src != null) {
+                    Map<String, Object> doc = new HashMap<>(src);
+                    doc.put("id", hit.id());
+                    allDocs.add(doc);
+                }
+            }
+            if (page.size() < PAGE_SIZE) break;
+            searchAfter = page.get(page.size() - 1).sort();
+        }
+
         Map<String, List<Map<String, Object>>> grouped = allDocs.stream()
             .filter(d -> d.get("toolName") != null && d.get("filePath") != null)
             .collect(Collectors.groupingBy(
@@ -229,14 +296,21 @@ public class MemoryConsolidationService {
             var group = entry.getValue();
             if (group.size() > 5) {
                 var sorted = group.stream()
-                    .sorted(Comparator.comparing(d -> (String) d.get("timestamp"), Comparator.nullsLast(Comparator.reverseOrder())))
+                    .sorted(Comparator.comparing(d -> (String) d.get("timestamp"),
+                            Comparator.nullsLast(Comparator.reverseOrder())))
                     .toList();
                 for (int i = 1; i < sorted.size(); i++) {
                     String id = (String) sorted.get(i).get("id");
-                    esClient.update(u -> u
+                    // Append tag using Painless script to preserve existing tags
+                    esClient.<Map, Map>update(u -> u
                         .index(OBS_INDEX)
                         .id(id)
-                        .doc(Map.of("tags", List.of("possibly-stale"))), Map.class);
+                        .script(s -> s
+                            .source(src2 -> src2.scriptString(
+                                "if (ctx._source.tags == null) { ctx._source.tags = [params.tag]; } " +
+                                "else if (!ctx._source.tags.contains(params.tag)) { ctx._source.tags.add(params.tag); }"))
+                            .params(Map.of("tag", JsonData.of("possibly-stale")))
+                        ), Map.class);
                     contradictions++;
                 }
             }
@@ -258,21 +332,22 @@ public class MemoryConsolidationService {
     }
 
     /**
-     * Returns estimated counts of memories that would be affected by consolidation/decay,
-     * without mutating any data.
+     * Returns estimated counts of memories that would be affected by consolidation/decay.
+     * Uses ES count API (no data mutation).
      */
     public Map<String, Object> dryRunStats() {
+        var p = promotion();
+        var d = decayCfg();
         Map<String, Object> stats = new java.util.LinkedHashMap<>();
         try {
             stats.put("workingToEpisodicCandidates",
-                    countTierOlderThan("WORKING", Instant.now().minus(1, ChronoUnit.HOURS)));
+                    countTierOlderThan("WORKING", Instant.now().minus(p.getWorkingToEpisodicDays(), ChronoUnit.DAYS)));
             stats.put("episodicToSemanticCandidates",
-                    countTierOlderThan("EPISODIC", Instant.now().minus(7, ChronoUnit.DAYS)));
-            stats.put("semanticToProceduralCandidates",
-                    countTierOlderThan("SEMANTIC", Instant.now().minus(30, ChronoUnit.DAYS)));
-            // WORKING half-life is 1 day; eviction threshold is 3x = 3 days
-            stats.put("staleWorkingCandidates",
-                    countTierOlderThan("WORKING", Instant.now().minus(3, ChronoUnit.DAYS)));
+                    countTierOlderThan("EPISODIC", Instant.now().minus(p.getEpisodicToSemanticDays(), ChronoUnit.DAYS)));
+            stats.put("staleEpisodicCandidates",
+                    countTierOlderThan("EPISODIC", Instant.now().minus(d.getStaleEpisodicDays(), ChronoUnit.DAYS)));
+            stats.put("staleSemanticCandidates",
+                    countTierOlderThan("SEMANTIC", Instant.now().minus(d.getStaleSemanticDays(), ChronoUnit.DAYS)));
         } catch (Exception e) {
             log.warn("dryRunStats query failed: {}", e.getMessage());
             stats.put("error", e.getMessage());
@@ -292,39 +367,46 @@ public class MemoryConsolidationService {
         return resp.count();
     }
 
-    // --- Helpers ---
+    // --- ES query helpers ---
 
-    private double importanceScore(Map<String, Object> doc) {
-        int accessCount = doc.get("accessCount") != null
-            ? ((Number) doc.get("accessCount")).intValue() : 0;
-        return 1.0 + Math.log(1.0 + accessCount) / Math.log(2.0);
+    /** One page of hits for a tier, sorted by _id for stable search_after cursor. */
+    private List<Hit<Map>> searchByTierPage(String tier, int size, List<FieldValue> searchAfter)
+            throws java.io.IOException {
+        SearchResponse<Map> response = esClient.search(s -> {
+            var q = s.index(OBS_INDEX)
+                .size(size)
+                .sort(sort -> sort.field(f -> f.field("_id").order(SortOrder.Asc)))
+                .query(query -> query.term(t -> t.field("tier").value(tier)));
+            if (searchAfter != null && !searchAfter.isEmpty()) {
+                q = q.searchAfter(searchAfter);
+            }
+            return q;
+        }, Map.class);
+        return (List<Hit<Map>>) (List<?>) response.hits().hits();
     }
 
-    private List<Map<String, Object>> getMemoriesByTier(String tier, int size) throws java.io.IOException {
-        SearchResponse<Map> response = esClient.search(s -> s
-            .index(OBS_INDEX)
-            .size(size)
-            .query(q -> q.term(t -> t.field("tier").value(tier))),
-            Map.class
-        );
-        return extractHits(response);
+    /** One page of all observations, sorted by _id for stable search_after cursor. */
+    private List<Hit<Map>> getAllMemoriesPage(int size, List<FieldValue> searchAfter)
+            throws java.io.IOException {
+        SearchResponse<Map> response = esClient.search(s -> {
+            var q = s.index(OBS_INDEX)
+                .size(size)
+                .sort(sort -> sort.field(f -> f.field("_id").order(SortOrder.Asc)));
+            if (searchAfter != null && !searchAfter.isEmpty()) {
+                q = q.searchAfter(searchAfter);
+            }
+            return q;
+        }, Map.class);
+        return (List<Hit<Map>>) (List<?>) response.hits().hits();
     }
 
-    private List<Map<String, Object>> getAllMemories(int size) throws java.io.IOException {
-        SearchResponse<Map> response = esClient.search(s -> s
-            .index(OBS_INDEX)
-            .size(size)
-            .sort(sort -> sort.field(f -> f.field("timestamp").order(SortOrder.Desc))),
-            Map.class
-        );
-        return extractHits(response);
+    private MemoryProperties.Consolidation.Promotion promotion() {
+        if (memProps != null) return memProps.getConsolidation().getPromotion();
+        return new MemoryProperties.Consolidation.Promotion();
     }
 
-    @SuppressWarnings("unchecked")
-    private List<Map<String, Object>> extractHits(SearchResponse<Map> response) {
-        return response.hits().hits().stream()
-            .map(h -> (Map<String, Object>) h.source())
-            .filter(Objects::nonNull)
-            .collect(Collectors.toList());
+    private MemoryProperties.Decay decayCfg() {
+        if (memProps != null) return memProps.getDecay();
+        return new MemoryProperties.Decay();
     }
 }

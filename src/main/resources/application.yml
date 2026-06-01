@@ -43,9 +43,18 @@ memory:
   consolidation:
     enabled: true
     cron: "0 0 */6 * * *"
+    promotion:
+      working-to-episodic-days: 1
+      working-to-episodic-access-count: 3
+      episodic-to-semantic-days: 7
+      episodic-to-semantic-access-count: 3
+      semantic-to-procedural-access-count: 10
   decay:
     enabled: true
     cron: "0 0 2 * * *"
+    soft-delete: true
+    stale-episodic-days: 30
+    stale-semantic-days: 90
 
 # Ollama
 ollama:

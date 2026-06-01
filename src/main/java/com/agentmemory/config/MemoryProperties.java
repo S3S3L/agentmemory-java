@@ -52,23 +52,56 @@ public class MemoryProperties {
         private boolean enabled = true;
         private String cron = "0 0 */6 * * *";
         private long intervalMinutes = 60;
+        private Promotion promotion = new Promotion();
+
         public boolean isEnabled() { return enabled; }
         public void setEnabled(boolean enabled) { this.enabled = enabled; }
         public String getCron() { return cron; }
         public void setCron(String cron) { this.cron = cron; }
         public long getIntervalMinutes() { return intervalMinutes; }
         public void setIntervalMinutes(long intervalMinutes) { this.intervalMinutes = intervalMinutes; }
+        public Promotion getPromotion() { return promotion; }
+        public void setPromotion(Promotion promotion) { this.promotion = promotion; }
+
+        public static class Promotion {
+            private int workingToEpisodicDays = 1;
+            private int workingToEpisodicAccessCount = 3;
+            private int episodicToSemanticDays = 7;
+            private int episodicToSemanticAccessCount = 3;
+            private int semanticToProceduralAccessCount = 10;
+
+            public int getWorkingToEpisodicDays() { return workingToEpisodicDays; }
+            public void setWorkingToEpisodicDays(int v) { this.workingToEpisodicDays = v; }
+            public int getWorkingToEpisodicAccessCount() { return workingToEpisodicAccessCount; }
+            public void setWorkingToEpisodicAccessCount(int v) { this.workingToEpisodicAccessCount = v; }
+            public int getEpisodicToSemanticDays() { return episodicToSemanticDays; }
+            public void setEpisodicToSemanticDays(int v) { this.episodicToSemanticDays = v; }
+            public int getEpisodicToSemanticAccessCount() { return episodicToSemanticAccessCount; }
+            public void setEpisodicToSemanticAccessCount(int v) { this.episodicToSemanticAccessCount = v; }
+            public int getSemanticToProceduralAccessCount() { return semanticToProceduralAccessCount; }
+            public void setSemanticToProceduralAccessCount(int v) { this.semanticToProceduralAccessCount = v; }
+        }
     }
 
     public static class Decay {
         private boolean enabled = true;
         private String cron = "0 0 2 * * *";
         private long intervalMinutes = 360;
+        private boolean softDelete = true;
+        private int staleEpisodicDays = 30;
+        private int staleSemanticDays = 90;
+
         public boolean isEnabled() { return enabled; }
         public void setEnabled(boolean enabled) { this.enabled = enabled; }
         public String getCron() { return cron; }
         public void setCron(String cron) { this.cron = cron; }
         public long getIntervalMinutes() { return intervalMinutes; }
         public void setIntervalMinutes(long intervalMinutes) { this.intervalMinutes = intervalMinutes; }
+        public boolean isSoftDelete() { return softDelete; }
+        public void setSoftDelete(boolean softDelete) { this.softDelete = softDelete; }
+        public int getStaleEpisodicDays() { return staleEpisodicDays; }
+        public void setStaleEpisodicDays(int staleEpisodicDays) { this.staleEpisodicDays = staleEpisodicDays; }
+        public int getStaleSemanticDays() { return staleSemanticDays; }
+        public void setStaleSemanticDays(int staleSemanticDays) { this.staleSemanticDays = staleSemanticDays; }
     }
 }

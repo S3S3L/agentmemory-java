@@ -179,7 +179,7 @@ public class ElasticsearchService {
         return results;
     }
 
-    private List<Hit<Map<String, Object>>> bm25Search(MemorySearchRequest req) throws IOException {
+    List<Hit<Map<String, Object>>> bm25Search(MemorySearchRequest req) throws IOException {
         // Use QueryExpander to remove stop words for better BM25 matching
         QueryExpander.ExpandedQuery expanded = QueryExpander.expand(req.query());
         String searchQuery = expanded.normalizedQuery().isEmpty() ? req.query() : expanded.normalizedQuery();
@@ -196,21 +196,24 @@ public class ElasticsearchService {
                 .size(props.getTopKBm25())
                 .source(src -> src.filter(f -> f.excludes("embedding")));
 
-            // Multi-field multi-match with per-field boosts; tieBreaker combines cross-field scores
-            q = q.query(qb -> qb.multiMatch(mm -> mm
-                .query(searchQuery)
-                .fields(List.of(
-                    "title^3.0",
-                    "concepts^2.5",
-                    "tags^2.0",
-                    "facts^2.0",
-                    "content^1.0",
-                    "input^0.8",
-                    "output^0.6",
-                    "filePath^1.5"
+            // Wrap in bool: multi-match MUST + exclude isActive=false (backward-compatible filter)
+            q = q.query(qb -> qb.bool(b -> b
+                .must(m -> m.multiMatch(mm -> mm
+                    .query(searchQuery)
+                    .fields(List.of(
+                        "title^3.0",
+                        "concepts^2.5",
+                        "tags^2.0",
+                        "facts^2.0",
+                        "content^1.0",
+                        "input^0.8",
+                        "output^0.6",
+                        "filePath^1.5"
+                    ))
+                    .type(co.elastic.clients.elasticsearch._types.query_dsl.TextQueryType.BestFields)
+                    .tieBreaker(0.3)
                 ))
-                .type(co.elastic.clients.elasticsearch._types.query_dsl.TextQueryType.BestFields)
-                .tieBreaker(0.3)
+                .mustNot(mn -> mn.term(t -> t.field("isActive").value(false)))
             ));
 
             return q;
@@ -219,7 +222,7 @@ public class ElasticsearchService {
         return (List<Hit<Map<String, Object>>>)(List<?>) response.hits().hits();
     }
 
-    private List<Hit<Map<String, Object>>> vectorSearch(MemorySearchRequest req, float[] queryVector) throws IOException {
+    List<Hit<Map<String, Object>>> vectorSearch(MemorySearchRequest req, float[] queryVector) throws IOException {
         List<Float> floatList = new ArrayList<>(queryVector.length);
         for (float v : queryVector) floatList.add(v);
 
@@ -236,6 +239,9 @@ public class ElasticsearchService {
                     .queryVector(floatList)
                     .numCandidates(numCandidates)
                     .k(props.getTopKVector())
+                    .filter(f -> f.bool(b -> b
+                        .mustNot(mn -> mn.term(t -> t.field("isActive").value(false)))
+                    ))
                 );
             return builder;
         }, mapDocumentClass());
@@ -281,6 +287,14 @@ public class ElasticsearchService {
 
     public void deleteMemory(String id) throws IOException {
         client.delete(d -> d.index(observationIndex).id(id));
+    }
+
+    public void softDeleteMemory(String id) throws IOException {
+        client.update(u -> u
+            .index(observationIndex)
+            .id(id)
+            .doc(Map.of("isActive", false)),
+            Map.class);
     }
 
     public void bulkUpdateAccessStats(List<String> ids) throws IOException {
