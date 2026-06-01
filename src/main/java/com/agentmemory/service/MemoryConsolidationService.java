@@ -18,6 +18,8 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 
+import org.springframework.beans.factory.annotation.Autowired;
+
 /**
  * 4-tier memory consolidation + Ebbinghaus decay.
  *
@@ -32,10 +34,17 @@ public class MemoryConsolidationService {
     private static final String OBS_INDEX = "memory-observations";
 
     private final ElasticsearchClient esClient;
+    private final LifecycleCoordinator coordinator;
     private ScheduledExecutorService scheduler;
 
-    public MemoryConsolidationService(ElasticsearchClient esClient) {
+    @Autowired
+    public MemoryConsolidationService(ElasticsearchClient esClient, LifecycleCoordinator coordinator) {
         this.esClient = esClient;
+        this.coordinator = coordinator;
+    }
+
+    public MemoryConsolidationService(ElasticsearchClient esClient) {
+        this(esClient, null);
     }
 
     /**
@@ -64,7 +73,12 @@ public class MemoryConsolidationService {
 
     @Scheduled(cron = "${memory.consolidation.cron:0 0 */6 * * *}")
     public void consolidate() {
+        if (coordinator != null && !coordinator.acquireLease("memory-consolidation", Duration.ofMinutes(10))) {
+            log.debug("Skipping consolidation: lease held by another instance");
+            return;
+        }
         log.info("Running memory consolidation...");
+        String error = null;
         try {
             promoteToEpisodic();
             promoteToSemantic();
@@ -72,18 +86,29 @@ public class MemoryConsolidationService {
             log.info("Memory consolidation complete");
         } catch (Exception e) {
             log.error("Memory consolidation failed", e);
+            error = e.getMessage();
+        } finally {
+            if (coordinator != null) coordinator.recordJobComplete("memory-consolidation", error);
         }
     }
 
     @Scheduled(cron = "${memory.decay.cron:0 0 2 * * *}")
     public void applyDecay() {
+        if (coordinator != null && !coordinator.acquireLease("memory-decay", Duration.ofMinutes(10))) {
+            log.debug("Skipping decay sweep: lease held by another instance");
+            return;
+        }
         log.info("Running memory decay sweep...");
+        String error = null;
         try {
             evictStaleMemories();
             detectContradictions();
             log.info("Memory decay sweep complete");
         } catch (Exception e) {
             log.error("Memory decay failed", e);
+            error = e.getMessage();
+        } finally {
+            if (coordinator != null) coordinator.recordJobComplete("memory-decay", error);
         }
     }
 

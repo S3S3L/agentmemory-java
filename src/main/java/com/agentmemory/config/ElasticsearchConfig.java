@@ -56,6 +56,7 @@ public class ElasticsearchConfig {
             initIndex(client, "memory-observations");
             initIndex(client, "memory-consolidated");
             initIndex(client, "memory-sessions");
+            initLifecycleStateIndex(client);
             addMissingFields(client);
         };
     }
@@ -70,6 +71,33 @@ public class ElasticsearchConfig {
                 .withJson(mappings)
             );
             log.info("Index created: {}", indexName);
+        }
+    }
+
+    private void initLifecycleStateIndex(ElasticsearchClient client) throws IOException {
+        String indexName = "memory-lifecycle-state";
+        boolean exists = client.indices().exists(e -> e.index(indexName)).value();
+        if (!exists) {
+            log.info("Creating lifecycle state index: {}", indexName);
+            String mapping = """
+                    {
+                      "settings": {"number_of_shards": 1, "number_of_replicas": 0},
+                      "mappings": {
+                        "properties": {
+                          "jobName":        {"type": "keyword"},
+                          "leaseOwner":     {"type": "keyword"},
+                          "leaseUntil":     {"type": "long"},
+                          "lastStartedAt":  {"type": "long"},
+                          "lastCompletedAt":{"type": "long"},
+                          "lastError":      {"type": "text"}
+                        }
+                      }
+                    }""";
+            client.indices().create(c -> c
+                .index(indexName)
+                .withJson(new java.io.ByteArrayInputStream(mapping.getBytes()))
+            );
+            log.info("Lifecycle state index created: {}", indexName);
         }
     }
 

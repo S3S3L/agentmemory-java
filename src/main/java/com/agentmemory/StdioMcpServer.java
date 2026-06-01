@@ -15,6 +15,7 @@ import com.agentmemory.mcp.McpToolRegistrar;
 import com.agentmemory.model.EmbeddingImpl;
 import com.agentmemory.model.RerankImpl;
 import com.agentmemory.service.ElasticsearchService;
+import com.agentmemory.service.LifecycleCoordinator;
 import com.agentmemory.service.MemoryConsolidationService;
 import com.agentmemory.service.MemoryPipelineService;
 import com.agentmemory.service.ReindexMigrationService;
@@ -140,7 +141,8 @@ public class StdioMcpServer {
                 memProps);
 
         // Consolidation (scheduled tasks) - start in background
-        MemoryConsolidationService consolidation = new MemoryConsolidationService(esClient);
+        LifecycleCoordinator coordinator = new LifecycleCoordinator(esClient);
+        MemoryConsolidationService consolidation = new MemoryConsolidationService(esClient, coordinator);
         consolidation.startScheduler();
 
         // MCP tools
