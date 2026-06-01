@@ -12,8 +12,12 @@ import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 
 import com.agentmemory.config.MemoryProperties;
+import com.agentmemory.model.ConsolidatedArtifact;
 import com.agentmemory.model.LifecycleJobState;
+import com.agentmemory.service.embed.EmbeddingService;
 
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
@@ -43,22 +47,35 @@ public class MemoryConsolidationService {
     private final ElasticsearchClient esClient;
     private final LifecycleCoordinator coordinator;
     final MemoryProperties memProps;
+    private final OllamaService ollamaService;
+    private final EmbeddingService embeddingService;
+    private final ElasticsearchService elasticsearchService;
     private ScheduledExecutorService scheduler;
 
     @Autowired
     public MemoryConsolidationService(ElasticsearchClient esClient, LifecycleCoordinator coordinator,
                                       MemoryProperties memProps) {
+        this(esClient, coordinator, memProps, null, null, null);
+    }
+
+    public MemoryConsolidationService(ElasticsearchClient esClient, LifecycleCoordinator coordinator,
+                                      MemoryProperties memProps, OllamaService ollamaService,
+                                      EmbeddingService embeddingService,
+                                      ElasticsearchService elasticsearchService) {
         this.esClient = esClient;
         this.coordinator = coordinator;
         this.memProps = memProps;
+        this.ollamaService = ollamaService;
+        this.embeddingService = embeddingService;
+        this.elasticsearchService = elasticsearchService;
     }
 
     public MemoryConsolidationService(ElasticsearchClient esClient, LifecycleCoordinator coordinator) {
-        this(esClient, coordinator, null);
+        this(esClient, coordinator, null, null, null, null);
     }
 
     public MemoryConsolidationService(ElasticsearchClient esClient) {
-        this(esClient, null, null);
+        this(esClient, null, null, null, null, null);
     }
 
     /**
@@ -365,6 +382,145 @@ public class MemoryConsolidationService {
                                 .lt(cutoff.toString()))))
                 )));
         return resp.count();
+    }
+
+    // --- Artifact generation ---
+
+    /**
+     * Generates a consolidated memory artifact from the given source observations.
+     * <p>
+     * The artifact ID is deterministic: {@code sha256(sorted source IDs joined by ",")} —
+     * so re-running with the same sources is idempotent (second call is a no-op).
+     *
+     * @param sources    raw observation maps (must contain at least {@code "id"} and {@code "content"})
+     * @param targetTier target memory tier: {@code "EPISODIC"}, {@code "SEMANTIC"}, etc.
+     * @return the newly created artifact, or {@code null} if it already existed (idempotent skip)
+     */
+    public ConsolidatedArtifact consolidateToArtifacts(List<Map<String, Object>> sources, String targetTier)
+            throws java.io.IOException {
+        if (sources == null || sources.isEmpty()) return null;
+
+        // 1. Sorted source IDs → deterministic artifact ID
+        List<String> sourceIds = sources.stream()
+                .map(s -> (String) s.get("id"))
+                .filter(Objects::nonNull)
+                .sorted()
+                .toList();
+        if (sourceIds.isEmpty()) return null;
+        String artifactId = sha256(String.join(",", sourceIds));
+
+        // 2. Idempotency: skip if already exists
+        if (elasticsearchService != null && elasticsearchService.existsConsolidatedArtifact(artifactId)) {
+            log.debug("Consolidated artifact {} already exists, skipping", artifactId);
+            return null;
+        }
+
+        // 3. Build combined content
+        StringBuilder combined = new StringBuilder();
+        for (var src : sources) {
+            String c = (String) src.get("content");
+            if (c != null && !c.isBlank()) combined.append(c.strip()).append("\n");
+        }
+        String rawContent = combined.toString().strip();
+
+        // 4. Generate summary text via Ollama (falls back to raw concatenation when unavailable)
+        String summaryText;
+        if (ollamaService != null) {
+            String prompt = String.format(
+                "Summarize these observations into a concise %s memory. Be factual and brief:\n%s",
+                targetTier, rawContent);
+            try {
+                summaryText = ollamaService.generateSummary(prompt);
+            } catch (Exception e) {
+                log.warn("Ollama summary generation failed, using raw content: {}", e.getMessage());
+                summaryText = rawContent;
+            }
+        } else {
+            summaryText = rawContent;
+        }
+
+        // 5. Embed the summary
+        float[] rawEmbedding = new float[0];
+        if (embeddingService != null) {
+            try {
+                rawEmbedding = embeddingService.embed(summaryText);
+            } catch (Exception e) {
+                log.warn("Embedding failed for consolidated artifact, using empty vector: {}", e.getMessage());
+            }
+        }
+        List<Double> embedding = new ArrayList<>(rawEmbedding.length);
+        for (float v : rawEmbedding) embedding.add((double) v);
+
+        // 6. Merge tags from all sources
+        Set<String> mergedTags = new LinkedHashSet<>();
+        for (var src : sources) {
+            Object tagsObj = src.get("tags");
+            if (tagsObj instanceof List<?> tagList) {
+                tagList.forEach(t -> { if (t != null) mergedTags.add(t.toString()); });
+            }
+        }
+
+        // 7. Determine sessionId (first non-null among sources)
+        String sessionId = sources.stream()
+                .map(s -> (String) s.get("sessionId"))
+                .filter(Objects::nonNull)
+                .findFirst()
+                .orElse("default");
+
+        // 8. Build artifact
+        ConsolidatedArtifact artifact = new ConsolidatedArtifact();
+        artifact.setId(artifactId);
+        artifact.setTier(targetTier);
+        artifact.setContent(summaryText);
+        artifact.setEmbedding(embedding);
+        artifact.setSourceIds(sourceIds);
+        artifact.setGeneratedBy("consolidation-v1");
+        artifact.setCreatedAt(Instant.now());
+        artifact.setSessionId(sessionId);
+        artifact.setTags(new ArrayList<>(mergedTags));
+
+        // 9. Upsert to memory-consolidated and mark sources inactive
+        if (elasticsearchService != null) {
+            elasticsearchService.upsertConsolidatedArtifact(artifact);
+            // Mark source observations as processed (soft-delete + tag)
+            for (var src : sources) {
+                String srcId = (String) src.get("id");
+                if (srcId == null) continue;
+                try {
+                    final String consolidatedTag = "consolidated-into:" + artifactId;
+                    esClient.<Map, Map>update(u -> u
+                        .index(OBS_INDEX)
+                        .id(srcId)
+                        .script(sc -> sc
+                            .source(s -> s.scriptString(
+                                "ctx._source.isActive = false; " +
+                                "if (ctx._source.tags == null) { ctx._source.tags = [params.tag]; } " +
+                                "else if (!ctx._source.tags.contains(params.tag)) { ctx._source.tags.add(params.tag); }"))
+                            .params(Map.of("tag", JsonData.of(consolidatedTag)))
+                        ), Map.class);
+                } catch (Exception e) {
+                    log.warn("Failed to mark source {} as consolidated: {}", srcId, e.getMessage());
+                }
+            }
+        }
+
+        log.info("Consolidated {} sources → artifact {} (tier={})", sourceIds.size(), artifactId, targetTier);
+        return artifact;
+    }
+
+    // --- Utilities ---
+
+    /** SHA-256 hex digest; used for deterministic artifact IDs. */
+    static String sha256(String input) {
+        try {
+            MessageDigest md = MessageDigest.getInstance("SHA-256");
+            byte[] hash = md.digest(input.getBytes(StandardCharsets.UTF_8));
+            StringBuilder hex = new StringBuilder(hash.length * 2);
+            for (byte b : hash) hex.append(String.format("%02x", b));
+            return hex.toString();
+        } catch (Exception e) {
+            return Integer.toHexString(input.hashCode());
+        }
     }
 
     // --- ES query helpers ---

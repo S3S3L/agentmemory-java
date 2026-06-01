@@ -16,7 +16,6 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
-
 import com.agentmemory.model.SearchResult;
 
 import org.slf4j.Logger;
@@ -173,6 +172,26 @@ public class MemoryPipelineService {
             } catch (Exception e) {
                 log.warn("Failed to update access stats for {} documents: {}", ids.size(), e.getMessage());
             }
+        }
+
+        // Merge results from memory-consolidated (best-effort; failures do not degrade recall)
+        try {
+            final float[] qv = queryVector;
+            List<SearchResult> consolidated = esService.searchConsolidated(qv, query, props.getTopKFinal());
+            if (consolidated != null && !consolidated.isEmpty()) {
+                Set<String> seenIds = results.stream().map(SearchResult::id).collect(java.util.stream.Collectors.toSet());
+                List<SearchResult> merged = new ArrayList<>(results);
+                for (var r : consolidated) {
+                    if (r.id() != null && !seenIds.contains(r.id())) merged.add(r);
+                }
+                results = merged.stream()
+                        .sorted(Comparator.comparingDouble(SearchResult::score).reversed())
+                        .limit(props.getTopKFinal())
+                        .toList();
+                log.debug("After merging consolidated artifacts: {} results total", results.size());
+            }
+        } catch (Exception e) {
+            log.warn("Consolidated search failed, returning observations only: {}", e.getMessage());
         }
 
         return results;

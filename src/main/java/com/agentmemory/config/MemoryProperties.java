@@ -52,6 +52,8 @@ public class MemoryProperties {
         private boolean enabled = true;
         private String cron = "0 0 */6 * * *";
         private long intervalMinutes = 60;
+        /** Ollama model used for generating summary/fact text during consolidation. */
+        private String summaryModel = "llama3.2";
         private Promotion promotion = new Promotion();
 
         public boolean isEnabled() { return enabled; }
@@ -60,6 +62,8 @@ public class MemoryProperties {
         public void setCron(String cron) { this.cron = cron; }
         public long getIntervalMinutes() { return intervalMinutes; }
         public void setIntervalMinutes(long intervalMinutes) { this.intervalMinutes = intervalMinutes; }
+        public String getSummaryModel() { return summaryModel; }
+        public void setSummaryModel(String summaryModel) { this.summaryModel = summaryModel; }
         public Promotion getPromotion() { return promotion; }
         public void setPromotion(Promotion promotion) { this.promotion = promotion; }
 

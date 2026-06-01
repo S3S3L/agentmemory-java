@@ -20,6 +20,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
+import com.agentmemory.model.ConsolidatedArtifact;
 import com.agentmemory.config.MemoryProperties;
 import com.agentmemory.model.MemorySearchRequest;
 import com.agentmemory.model.MemoryTier;
@@ -40,6 +41,7 @@ public class ElasticsearchService {
     private static final Logger log = LoggerFactory.getLogger(ElasticsearchService.class);
     private static final String DEFAULT_OBS_INDEX = "memory-observations";
     private static final String SESSION_INDEX = "memory-sessions";
+    private static final String CONSOLIDATED_INDEX = "memory-consolidated";
     private static final ExecutorService SEARCH_EXECUTOR = Executors.newVirtualThreadPerTaskExecutor();
 
     private final ElasticsearchClient client;
@@ -264,6 +266,103 @@ public class ElasticsearchService {
             hit.score() != null ? hit.score() : 0.0,
             0.0,
             0.0
+        );
+    }
+
+    // --- Consolidated artifact operations ---
+
+    /**
+     * Returns true if a consolidated artifact with the given ID already exists.
+     */
+    public boolean existsConsolidatedArtifact(String id) throws IOException {
+        return client.exists(e -> e.index(CONSOLIDATED_INDEX).id(id)).value();
+    }
+
+    /**
+     * Indexes a {@link ConsolidatedArtifact} into {@code memory-consolidated}.
+     * No-op if an artifact with the same deterministic ID already exists.
+     */
+    public void upsertConsolidatedArtifact(ConsolidatedArtifact artifact) throws IOException {
+        if (existsConsolidatedArtifact(artifact.getId())) {
+            log.debug("Consolidated artifact {} already exists, skipping upsert", artifact.getId());
+            return;
+        }
+        Map<String, Object> doc = new LinkedHashMap<>();
+        doc.put("id", artifact.getId());
+        doc.put("tier", artifact.getTier());
+        doc.put("content", artifact.getContent());
+        doc.put("embedding", artifact.getEmbedding());
+        doc.put("sourceIds", artifact.getSourceIds());
+        doc.put("generatedBy", artifact.getGeneratedBy());
+        doc.put("createdAt", artifact.getCreatedAt() != null ? artifact.getCreatedAt().toString() : null);
+        doc.put("sessionId", artifact.getSessionId());
+        doc.put("tags", artifact.getTags());
+        String artifactId = artifact.getId();
+        client.index(i -> i.index(CONSOLIDATED_INDEX).id(artifactId).document(doc));
+        log.debug("Upserted consolidated artifact {} to {}", artifactId, CONSOLIDATED_INDEX);
+    }
+
+    /**
+     * Searches the {@code memory-consolidated} index.
+     * Uses KNN when a query vector is available, otherwise falls back to BM25.
+     */
+    public List<SearchResult> searchConsolidated(float[] queryVector, String queryText, int k) throws IOException {
+        boolean canUseVector = embeddingService != null
+                && embeddingService.isAvailable()
+                && queryVector != null
+                && queryVector.length > 0;
+
+        if (canUseVector) {
+            List<Float> floatList = new ArrayList<>(queryVector.length);
+            for (float v : queryVector) floatList.add(v);
+            int numCandidates = Math.max(200, k * 10);
+            SearchResponse<Map<String, Object>> response = client.search(s -> s
+                    .index(CONSOLIDATED_INDEX)
+                    .size(k)
+                    .source(src -> src.filter(f -> f.excludes("embedding")))
+                    .knn(knn -> knn
+                            .field("embedding")
+                            .queryVector(floatList)
+                            .numCandidates(numCandidates)
+                            .k(k)
+                    ), mapDocumentClass());
+            return response.hits().hits().stream()
+                    .map(this::toConsolidatedSearchResult)
+                    .filter(Objects::nonNull)
+                    .toList();
+        } else {
+            if (queryText == null || queryText.isBlank()) return List.of();
+            SearchResponse<Map<String, Object>> response = client.search(s -> s
+                    .index(CONSOLIDATED_INDEX)
+                    .size(k)
+                    .source(src -> src.filter(f -> f.excludes("embedding")))
+                    .query(q -> q.multiMatch(mm -> mm
+                            .query(queryText)
+                            .fields(List.of("content^1.0", "tags^2.0"))
+                    )), mapDocumentClass());
+            return response.hits().hits().stream()
+                    .map(this::toConsolidatedSearchResult)
+                    .filter(Objects::nonNull)
+                    .toList();
+        }
+    }
+
+    private SearchResult toConsolidatedSearchResult(Hit<Map<String, Object>> hit) {
+        Map<String, Object> src = hit.source();
+        if (src == null) return null;
+        String tierStr = (String) src.getOrDefault("tier", "EPISODIC");
+        double score = hit.score() != null ? hit.score() : 0.0;
+        return new SearchResult(
+                hit.id(),
+                (String) src.get("content"),
+                MemoryTier.valueOf(tierStr),
+                (String) src.get("sessionId"),
+                null,
+                null,
+                score,
+                0.0,
+                score,
+                0.0
         );
     }
 

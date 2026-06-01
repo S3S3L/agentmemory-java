@@ -63,7 +63,10 @@
       "supersededBy": { "type": "keyword" },
       "isActive": { "type": "boolean" },
       "accessCount": { "type": "integer" },
-      "lastAccessed": { "type": "date" }
+      "lastAccessed": { "type": "date" },
+      "sourceIds": { "type": "keyword" },
+      "generatedBy": { "type": "keyword" },
+      "createdAt": { "type": "date" }
     }
   }
 }
