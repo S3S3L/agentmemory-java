@@ -365,6 +365,41 @@ class AgentMemoryBenchmark {
         System.out.println("Benchmark report written to " + dir.toAbsolutePath());
     }
 
+    /**
+     * Lifecycle smoke test: verifies production initialization path (including lifecycle index
+     * creation) works without error.  Uses the same ES connection as the main benchmark.
+     */
+    @Test
+    @Order(4)
+    void lifecycleSmoke() throws Exception {
+        System.out.println("\n========================================");
+        System.out.println("  Lifecycle Smoke Test");
+        System.out.println("========================================");
+
+        var coordinator = new LifecycleCoordinator(esClient);
+        var props = new MemoryProperties();
+        var consolidationService = new MemoryConsolidationService(esClient, coordinator, props);
+
+        // dryRunStats: must return non-null, non-empty map without throwing
+        Map<String, Object> stats = consolidationService.dryRunStats();
+        assertNotNull(stats, "dryRunStats() must return non-null");
+        System.out.println("  dryRunStats: " + stats);
+
+        // getJobState: must not throw (returns empty Optional when index not yet seeded)
+        var jobState = coordinator.getJobState("memory-consolidation");
+        System.out.println("  consolidation job state: " + (jobState.isPresent() ? jobState.get() : "(none)"));
+
+        var decayState = coordinator.getJobState("memory-decay");
+        System.out.println("  decay job state: " + (decayState.isPresent() ? decayState.get() : "(none)"));
+
+        // isJobDue: must not throw
+        boolean isDue = consolidationService.isJobDue("memory-consolidation", 60);
+        System.out.printf("  consolidation isDue (interval=60min): %b%n", isDue);
+
+        System.out.println("  Lifecycle smoke test PASSED");
+        System.out.println("========================================\n");
+    }
+
     // --- Metric computation (ported from TypeScript) ---
 
     private double recall(List<String> retrieved, Set<String> relevant, int k) {

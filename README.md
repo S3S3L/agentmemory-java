@@ -186,9 +186,104 @@ tier 可选值：`WORKING` | `EPISODIC` | `SEMANTIC` | `PROCEDURAL`
 
 无参数。
 
-## REST API
+## Lifecycle Management
 
-| 方法 | 路径 | 说明 |
+AgentMemory implements a 4-tier memory lifecycle modelled after Ebbinghaus forgetting curves.
+
+### Memory Tiers
+
+| Tier | Contents | Promotion criteria | Decay half-life |
+|---|---|---|---|
+| **WORKING** | Raw tool-call observations | Age ≥ 1 day **or** accessed ≥ 3 times → EPISODIC | 3 days |
+| **EPISODIC** | Session-level summaries | Age ≥ 7 days **and** accessed ≥ 3 times → SEMANTIC | 30 days |
+| **SEMANTIC** | Extracted facts / patterns | accessed ≥ 10 times → PROCEDURAL | 90 days |
+| **PROCEDURAL** | Durable workflows / decisions | Highest tier, never promoted | 180 days |
+
+### What Triggers Lifecycle
+
+| Trigger | When |
+|---|---|
+| **Scheduled (Spring)** | `memory.consolidation.cron` (default every 6 h) and `memory.decay.cron` (default 02:00 daily) |
+| **Startup catch-up** | `isJobDue()` check: if last run was > `intervalMinutes` ago, the job fires immediately on start |
+| **Manual (MCP tool)** | `memory_lifecycle_run` with `dryRun=false` |
+
+### Multi-Instance Safety (stdio / Spring Boot)
+
+Each JVM instance holds a unique `instanceId` (random UUID). Before executing a job, the
+instance attempts to acquire an Elasticsearch-backed distributed lease stored in the
+`memory-lifecycle-state` index. If another instance holds a valid (non-expired) lease, the
+current instance skips the run. Leases expire after 10 minutes, preventing a crashed instance
+from permanently blocking execution. Concurrent acquisitions are serialised via ES optimistic
+concurrency (`if_seq_no` / `if_primary_term`).
+
+### Configuration Reference
+
+All keys are under the `memory:` prefix in `application.yml`.
+
+#### `memory.consolidation.*`
+
+| Key | Default | Description |
+|---|---|---|
+| `enabled` | `true` | Enable/disable the consolidation job |
+| `cron` | `0 0 */6 * * *` | Spring cron expression for scheduled runs |
+| `interval-minutes` | `360` | Minutes between runs; used by `isJobDue()` for startup catch-up |
+| `summary-model` | `llama3.2` | Ollama model used to generate summary text for consolidated artifacts |
+| `promotion.working-to-episodic-days` | `1` | Age threshold (days) for WORKING → EPISODIC promotion |
+| `promotion.working-to-episodic-access-count` | `3` | Access count threshold for WORKING → EPISODIC (OR with age) |
+| `promotion.episodic-to-semantic-days` | `7` | Age threshold (days) for EPISODIC → SEMANTIC |
+| `promotion.episodic-to-semantic-access-count` | `3` | Access count threshold for EPISODIC → SEMANTIC (AND with age) |
+| `promotion.semantic-to-procedural-access-count` | `10` | Access count threshold for SEMANTIC → PROCEDURAL |
+
+#### `memory.decay.*`
+
+| Key | Default | Description |
+|---|---|---|
+| `enabled` | `true` | Enable/disable the decay sweep job |
+| `cron` | `0 0 2 * * *` | Spring cron expression (daily at 02:00) |
+| `interval-minutes` | `1440` | Minutes between runs; used by `isJobDue()` for startup catch-up |
+| `soft-delete` | `true` | `true` = set `isActive=false`; `false` = hard-delete from ES |
+| `stale-episodic-days` | `30` | Days before an EPISODIC memory is considered stale |
+| `stale-semantic-days` | `90` | Days before a SEMANTIC memory is considered stale |
+
+### MCP Lifecycle Tools
+
+#### `memory_lifecycle_status`
+
+Returns the current state of all lifecycle jobs. No parameters.
+
+Response JSON shape:
+```json
+{
+  "instanceId": "<uuid>",
+  "consolidation": {
+    "jobName": "memory-consolidation",
+    "enabled": true,
+    "intervalMinutes": 360,
+    "isDue": false,
+    "leaseOwner": "<uuid>",
+    "leaseUntil": "2024-01-01T06:10:00Z",
+    "lastStartedAt": "2024-01-01T06:00:00Z",
+    "lastCompletedAt": "2024-01-01T06:00:05Z",
+    "lastError": null
+  },
+  "decay": { "..." }
+}
+```
+
+#### `memory_lifecycle_run`
+
+Manually trigger lifecycle jobs or preview candidate counts.
+
+```json
+{
+  "job": "consolidation",
+  "dryRun": true
+}
+```
+
+`job` values: `consolidation` | `decay` | `all`. `dryRun=true` returns candidate counts only without mutating data.
+
+## REST API
 |---|---|---|
 | `GET` | `/health` | 健康检查 |
 | `POST` | `/memory/observe` | 写入观测记录 |

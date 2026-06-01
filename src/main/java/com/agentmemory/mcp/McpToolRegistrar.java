@@ -1,5 +1,6 @@
 package com.agentmemory.mcp;
 
+import com.agentmemory.config.MemoryProperties;
 import com.agentmemory.model.LifecycleJobState;
 import com.agentmemory.model.MemoryTier;
 import com.agentmemory.model.SearchResult;
@@ -35,22 +36,26 @@ public class McpToolRegistrar {
     private final ReindexMigrationService migrationService;
     private final MemoryConsolidationService consolidationService;
     private final LifecycleCoordinator coordinator;
+    private final MemoryProperties memProps;
 
+    @org.springframework.beans.factory.annotation.Autowired
     public McpToolRegistrar(MemoryPipelineService pipeline, ElasticsearchService esService,
                             ReindexMigrationService migrationService,
                             MemoryConsolidationService consolidationService,
-                            LifecycleCoordinator coordinator) {
+                            LifecycleCoordinator coordinator,
+                            MemoryProperties memProps) {
         this.pipeline = pipeline;
         this.esService = esService;
         this.migrationService = migrationService;
         this.consolidationService = consolidationService;
         this.coordinator = coordinator;
+        this.memProps = memProps;
     }
 
     /** Convenience constructor for callers that don't need lifecycle tools. */
     public McpToolRegistrar(MemoryPipelineService pipeline, ElasticsearchService esService,
                             ReindexMigrationService migrationService) {
-        this(pipeline, esService, migrationService, null, null);
+        this(pipeline, esService, migrationService, null, null, null);
     }
 
     @SuppressWarnings("unchecked")
@@ -268,14 +273,24 @@ public class McpToolRegistrar {
                 return errorResult("Lifecycle coordinator not available in this mode");
             }
             try {
+                boolean consolidationEnabled = memProps == null || memProps.getConsolidation().isEnabled();
+                boolean decayEnabled = memProps == null || memProps.getDecay().isEnabled();
+                long consolidationInterval = memProps != null ? memProps.getConsolidation().getIntervalMinutes() : 60;
+                long decayInterval = memProps != null ? memProps.getDecay().getIntervalMinutes() : 360;
+
                 Map<String, Object> result = new LinkedHashMap<>();
-                long[] defaultIntervals = {60, 360};
-                String[] jobs = {"memory-consolidation", "memory-decay"};
-                for (int i = 0; i < jobs.length; i++) {
-                    String jobName = jobs[i];
-                    long interval = defaultIntervals[i];
+                result.put("instanceId", coordinator.getInstanceId());
+
+                record JobInfo(String key, String jobName, boolean enabled, long intervalMinutes) {}
+                for (var ji : List.of(
+                        new JobInfo("consolidation", "memory-consolidation", consolidationEnabled, consolidationInterval),
+                        new JobInfo("decay", "memory-decay", decayEnabled, decayInterval))) {
                     Map<String, Object> info = new LinkedHashMap<>();
-                    Optional<LifecycleJobState> stateOpt = coordinator.getJobState(jobName);
+                    info.put("jobName", ji.jobName());
+                    info.put("enabled", ji.enabled());
+                    info.put("intervalMinutes", ji.intervalMinutes());
+                    info.put("isDue", consolidationService.isJobDue(ji.jobName(), ji.intervalMinutes()));
+                    Optional<LifecycleJobState> stateOpt = coordinator.getJobState(ji.jobName());
                     if (stateOpt.isPresent()) {
                         LifecycleJobState s = stateOpt.get();
                         info.put("leaseOwner", s.getLeaseOwner());
@@ -284,10 +299,13 @@ public class McpToolRegistrar {
                         info.put("lastCompletedAt", s.getLastCompletedAt() != null ? s.getLastCompletedAt().toString() : null);
                         info.put("lastError", s.getLastError());
                     } else {
-                        info.put("note", "No state found");
+                        info.put("leaseOwner", null);
+                        info.put("leaseUntil", null);
+                        info.put("lastStartedAt", null);
+                        info.put("lastCompletedAt", null);
+                        info.put("lastError", null);
                     }
-                    info.put("isDue", consolidationService.isJobDue(jobName, interval));
-                    result.put(jobName, info);
+                    result.put(ji.key(), info);
                 }
                 return new McpSchema.CallToolResult(
                     List.of(new McpSchema.TextContent(JSON.writeValueAsString(result))), false);

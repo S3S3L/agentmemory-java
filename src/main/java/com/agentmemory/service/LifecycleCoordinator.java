@@ -36,6 +36,9 @@ public class LifecycleCoordinator {
     private final ElasticsearchClient client;
     final String instanceId = UUID.randomUUID().toString();
 
+    /** Returns the unique identifier for this JVM instance. */
+    public String getInstanceId() { return instanceId; }
+
     public LifecycleCoordinator(ElasticsearchClient client) {
         this.client = client;
     }

@@ -183,7 +183,7 @@ public class StdioMcpServer {
 
         // MCP tools
         ReindexMigrationService migrationService = new ReindexMigrationService(esClient, embeddingService, memProps);
-        McpToolRegistrar registrar = new McpToolRegistrar(pipeline, esService, migrationService, consolidation, coordinator);
+        McpToolRegistrar registrar = new McpToolRegistrar(pipeline, esService, migrationService, consolidation, coordinator, memProps);
 
         // Stdio transport
         StdioServerTransportProvider stdioTransport = new StdioServerTransportProvider(mapper);

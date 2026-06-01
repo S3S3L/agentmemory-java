@@ -42,7 +42,9 @@ memory:
   max-embed-chars: 24000
   consolidation:
     enabled: true
-    cron: "0 0 */6 * * *"
+    cron: "0 0 */6 * * *"          # Spring cron: run every 6 hours
+    interval-minutes: 360           # Used by isJobDue() to decide if a run is overdue
+    summary-model: llama3.2         # Ollama model for generating summary text during consolidation
     promotion:
       working-to-episodic-days: 1
       working-to-episodic-access-count: 3
@@ -51,8 +53,9 @@ memory:
       semantic-to-procedural-access-count: 10
   decay:
     enabled: true
-    cron: "0 0 2 * * *"
-    soft-delete: true
+    cron: "0 0 2 * * *"             # Spring cron: run daily at 02:00
+    interval-minutes: 1440          # 24 h; used by isJobDue() for overdue detection
+    soft-delete: true               # true = set isActive=false; false = hard-delete
     stale-episodic-days: 30
     stale-semantic-days: 90
 
