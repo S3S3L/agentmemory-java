@@ -5,6 +5,8 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 import org.apache.hc.core5.http.HttpHost;
 import org.apache.hc.core5.util.Timeout;
@@ -57,6 +59,7 @@ public class StdioMcpServer {
     static final int DEFAULT_CONNECTION_REQUEST_TIMEOUT_MILLIS = 5_000;
     static final int DEFAULT_CONNECT_TIMEOUT_MILLIS = 3_000;
     static final int DEFAULT_RESPONSE_TIMEOUT_MILLIS = 30_000;
+    private static final Pattern ENV_PLACEHOLDER = Pattern.compile("\\$\\{([A-Z_]+):([^}]*)\\}");
     private static DashScopeConfig dsConfig;
 
     record ElasticsearchTimeouts(
@@ -96,8 +99,8 @@ public class StdioMcpServer {
 
         JsonNode config = yml.readTree(StdioMcpServer.class.getClassLoader().getResourceAsStream("application.yml"));
 
-        EmbeddingImpl eImpl = EmbeddingImpl.fromString(config.get("agentmemory").get("embedding").asText());
-        RerankImpl rImpl = RerankImpl.fromString(config.get("agentmemory").get("rerank").asText());
+        EmbeddingImpl eImpl = EmbeddingImpl.fromString(resolvePlaceholders(config.get("agentmemory").get("embedding").asText()));
+        RerankImpl rImpl = RerankImpl.fromString(resolvePlaceholders(config.get("agentmemory").get("rerank").asText()));
 
         EmbeddingService embeddingService;
         RerankService rerankService;
@@ -130,8 +133,12 @@ public class StdioMcpServer {
         Rest5Client restClient = configureElasticsearchTimeouts(
                 Rest5Client.builder(new HttpHost(esScheme, esHost, esPort)),
                 esTimeouts).build();
+        // ES client needs JavaTimeModule for Instant deserialization (e.g., SessionRecord)
+        ObjectMapper esMapper = new ObjectMapper();
+        esMapper.registerModule(new JavaTimeModule());
+        esMapper.configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false);
         ElasticsearchClient esClient = new ElasticsearchClient(
-                new Rest5ClientTransport(restClient, new JacksonJsonpMapper()));
+                new Rest5ClientTransport(restClient, new JacksonJsonpMapper(esMapper)));
 
         // Verify ES connection
         try {
@@ -227,6 +234,16 @@ public class StdioMcpServer {
         }));
 
         latch.await();
+    }
+
+    /** Resolve Spring-style ${VAR:default} placeholders against environment variables. */
+    private static String resolvePlaceholders(String value) {
+        Matcher m = ENV_PLACEHOLDER.matcher(value);
+        if (m.matches()) {
+            String envVal = System.getenv(m.group(1));
+            return (envVal != null && !envVal.isBlank()) ? envVal : m.group(2);
+        }
+        return value;
     }
 
     private static String getEnvOr(String name, String defaultValue) {

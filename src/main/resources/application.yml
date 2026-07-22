@@ -6,8 +6,8 @@ spring:
     name: agentmemory
 
 agentmemory:
-  embedding: ollama
-  rerank: rest
+  embedding: ${AGENTMEMORY_EMBEDDING:ollama}
+  rerank: ${AGENTMEMORY_RERANK:rest}
 
 # Elasticsearch
 elasticsearch:
