@@ -27,6 +27,7 @@ class TokenBudgetTest {
         assertTrue(text.contains("Read"));
         assertTrue(text.contains("src/main.rs"));
         assertTrue(text.contains("test content"));
+        assertTrue(text.contains("ID: id-test content"));
     }
 
     @Test
@@ -61,6 +62,7 @@ class TokenBudgetTest {
         String text = TokenBudget.formatWithRerank(List.of(result), 1000);
 
         assertTrue(text.contains("0.92"));
+        assertTrue(text.contains("ID: id-test"));
     }
 
     @Test

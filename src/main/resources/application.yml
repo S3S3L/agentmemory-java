@@ -14,6 +14,9 @@ elasticsearch:
   host: localhost
   port: 9200
   scheme: http
+  connection-request-timeout-ms: 5000
+  connect-timeout-ms: 3000
+  response-timeout-ms: 30000
 
 # DashScope
 dashscope:

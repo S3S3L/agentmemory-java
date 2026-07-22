@@ -154,8 +154,8 @@ public class McpToolRegistrar {
                 var items = esService.getTimeline(limit);
                 String text = items.isEmpty() ? "No observations found."
                     : "Recent observations:\n" + items.stream()
-                    .map(m -> "- [%s] tool=%s file=%s".formatted(
-                        m.get("timestamp"), m.get("toolName"), m.get("filePath")))
+                    .map(m -> "- [%s] id=%s tool=%s file=%s".formatted(
+                        m.get("timestamp"), m.get("id"), m.get("toolName"), m.get("filePath")))
                     .reduce((a, b) -> a + "\n" + b).orElse("");
                 return new McpSchema.CallToolResult(List.of(new McpSchema.TextContent(text)), false);
             } catch (Exception e) {
@@ -215,9 +215,12 @@ public class McpToolRegistrar {
         return new McpServerFeatures.SyncToolSpecification(tool, (exchange, args) -> {
             String id = (String) args.get("id");
             try {
-                esService.deleteMemory(id);
+                ElasticsearchService.DeleteResult result = esService.deleteMemory(id);
+                String message = result == ElasticsearchService.DeleteResult.DELETED
+                    ? "Deleted memory: " + id
+                    : "Memory not found: " + id;
                 return new McpSchema.CallToolResult(
-                    List.of(new McpSchema.TextContent("Deleted memory: " + id)), false);
+                    List.of(new McpSchema.TextContent(message)), false);
             } catch (Exception e) {
                 log.error("memory_forget failed", e);
                 return errorResult("Forget failed: " + e.getMessage());

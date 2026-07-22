@@ -7,6 +7,7 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 
 import org.apache.hc.core5.http.HttpHost;
+import org.apache.hc.core5.util.Timeout;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -15,6 +16,7 @@ import com.agentmemory.config.MemoryProperties;
 import com.agentmemory.config.OllamaConfig;
 import com.agentmemory.config.RestRerankConfig;
 import com.agentmemory.mcp.McpToolRegistrar;
+import com.agentmemory.mcp.SingleWriterStdioTransportProvider;
 import com.agentmemory.model.EmbeddingImpl;
 import com.agentmemory.model.RerankImpl;
 import com.agentmemory.service.ElasticsearchService;
@@ -38,9 +40,9 @@ import co.elastic.clients.elasticsearch.ElasticsearchClient;
 import co.elastic.clients.json.jackson.JacksonJsonpMapper;
 import co.elastic.clients.transport.rest5_client.Rest5ClientTransport;
 import co.elastic.clients.transport.rest5_client.low_level.Rest5Client;
+import co.elastic.clients.transport.rest5_client.low_level.Rest5ClientBuilder;
 import io.modelcontextprotocol.server.McpServer;
 import io.modelcontextprotocol.server.McpSyncServer;
-import io.modelcontextprotocol.server.transport.StdioServerTransportProvider;
 
 /**
  * Standalone MCP server via stdio transport.
@@ -52,7 +54,16 @@ import io.modelcontextprotocol.server.transport.StdioServerTransportProvider;
 public class StdioMcpServer {
 
     private static final Logger log = LoggerFactory.getLogger(StdioMcpServer.class);
+    static final int DEFAULT_CONNECTION_REQUEST_TIMEOUT_MILLIS = 5_000;
+    static final int DEFAULT_CONNECT_TIMEOUT_MILLIS = 3_000;
+    static final int DEFAULT_RESPONSE_TIMEOUT_MILLIS = 30_000;
     private static DashScopeConfig dsConfig;
+
+    record ElasticsearchTimeouts(
+            int connectionRequestTimeoutMillis,
+            int connectTimeoutMillis,
+            int responseTimeoutMillis) {
+    }
 
     private static DashScopeConfig getDsConfig() {
         if (dsConfig != null)
@@ -115,8 +126,10 @@ public class StdioMcpServer {
         MemoryProperties memProps = yml.treeToValue(config.get("memory"), MemoryProperties.class);
 
         // Elasticsearch client
-        Rest5Client restClient = Rest5Client.builder(
-                new HttpHost(esScheme, esHost, esPort)).build();
+        ElasticsearchTimeouts esTimeouts = elasticsearchTimeouts(config);
+        Rest5Client restClient = configureElasticsearchTimeouts(
+                Rest5Client.builder(new HttpHost(esScheme, esHost, esPort)),
+                esTimeouts).build();
         ElasticsearchClient esClient = new ElasticsearchClient(
                 new Rest5ClientTransport(restClient, new JacksonJsonpMapper()));
 
@@ -186,7 +199,8 @@ public class StdioMcpServer {
         McpToolRegistrar registrar = new McpToolRegistrar(pipeline, esService, migrationService, consolidation, coordinator, memProps);
 
         // Stdio transport
-        StdioServerTransportProvider stdioTransport = new StdioServerTransportProvider(mapper);
+        SingleWriterStdioTransportProvider stdioTransport =
+                new SingleWriterStdioTransportProvider(mapper);
 
         // Build MCP server
         McpSyncServer server = McpServer.sync(stdioTransport)
@@ -228,5 +242,40 @@ public class StdioMcpServer {
         } catch (NumberFormatException e) {
             return defaultValue;
         }
+    }
+
+    static ElasticsearchTimeouts elasticsearchTimeouts(JsonNode config) {
+        JsonNode elasticsearch = config.path("elasticsearch");
+        return new ElasticsearchTimeouts(
+            timeoutMillis(elasticsearch, "connection-request-timeout-ms",
+                DEFAULT_CONNECTION_REQUEST_TIMEOUT_MILLIS),
+            timeoutMillis(elasticsearch, "connect-timeout-ms", DEFAULT_CONNECT_TIMEOUT_MILLIS),
+            timeoutMillis(elasticsearch, "response-timeout-ms", DEFAULT_RESPONSE_TIMEOUT_MILLIS)
+        );
+    }
+
+    static Rest5ClientBuilder configureElasticsearchTimeouts(
+            Rest5ClientBuilder builder, ElasticsearchTimeouts timeouts) {
+        return builder
+            .setRequestConfigCallback(request -> request
+                .setConnectionRequestTimeout(Timeout.of(
+                    timeouts.connectionRequestTimeoutMillis(), TimeUnit.MILLISECONDS))
+                .setResponseTimeout(Timeout.of(
+                    timeouts.responseTimeoutMillis(), TimeUnit.MILLISECONDS)))
+            .setConnectionConfigCallback(connection -> connection
+                .setConnectTimeout(Timeout.of(
+                    timeouts.connectTimeoutMillis(), TimeUnit.MILLISECONDS)));
+    }
+
+    private static int timeoutMillis(JsonNode elasticsearch, String field, int defaultValue) {
+        JsonNode value = elasticsearch.get(field);
+        if (value == null) {
+            return defaultValue;
+        }
+        if (!value.isIntegralNumber() || !value.canConvertToInt() || value.intValue() <= 0) {
+            throw new IllegalArgumentException(
+                "elasticsearch." + field + " must be a positive integer");
+        }
+        return value.intValue();
     }
 }

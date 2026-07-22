@@ -30,13 +30,20 @@ import com.agentmemory.model.SessionRecord;
 import com.agentmemory.service.embed.EmbeddingService;
 
 import co.elastic.clients.elasticsearch.ElasticsearchClient;
+import co.elastic.clients.elasticsearch._types.Result;
 import co.elastic.clients.elasticsearch._types.SortOrder;
+import co.elastic.clients.elasticsearch._types.mapping.FieldType;
 import co.elastic.clients.elasticsearch.core.SearchResponse;
 import co.elastic.clients.elasticsearch.core.search.Hit;
 
 @SuppressWarnings("unchecked")
 @Service
 public class ElasticsearchService {
+
+    public enum DeleteResult {
+        DELETED,
+        NOT_FOUND
+    }
 
     private static final Logger log = LoggerFactory.getLogger(ElasticsearchService.class);
     private static final String DEFAULT_OBS_INDEX = "memory-observations";
@@ -375,7 +382,10 @@ public class ElasticsearchService {
         SearchResponse<SessionRecord> response = client.search(s -> s
             .index(SESSION_INDEX)
             .size(limit)
-            .sort(sort -> sort.field(f -> f.field("startTime").order(SortOrder.Desc))),
+            .sort(sort -> sort.field(f -> f
+                .field("startTime")
+                .order(SortOrder.Desc)
+                .unmappedType(FieldType.Date))),
             SessionRecord.class
         );
         return response.hits().hits().stream()
@@ -384,8 +394,13 @@ public class ElasticsearchService {
             .toList();
     }
 
-    public void deleteMemory(String id) throws IOException {
-        client.delete(d -> d.index(observationIndex).id(id));
+    public DeleteResult deleteMemory(String id) throws IOException {
+        Result result = client.delete(d -> d.index(observationIndex).id(id)).result();
+        return switch (result) {
+            case Deleted -> DeleteResult.DELETED;
+            case NotFound -> DeleteResult.NOT_FOUND;
+            default -> throw new IllegalStateException("Unexpected Elasticsearch delete result: " + result);
+        };
     }
 
     public void softDeleteMemory(String id) throws IOException {
@@ -475,8 +490,8 @@ public class ElasticsearchService {
         SearchResponse<Void> response = client.search(s -> s
             .index(observationIndex)
             .size(0)
-            .aggregations("tool_usage", a -> a.terms(t -> t.field("toolName.keyword").size(20)))
-            .aggregations("top_tags", a -> a.terms(t -> t.field("tags.keyword").size(20))),
+            .aggregations("tool_usage", a -> a.terms(t -> t.field("toolName").size(20)))
+            .aggregations("top_tags", a -> a.terms(t -> t.field("tags").size(20))),
             Void.class
         );
         return Map.of("aggregations", response.aggregations());
@@ -490,10 +505,10 @@ public class ElasticsearchService {
             }
             return base
                 .aggregations("total", a -> a.valueCount(vc -> vc.field("_index")))
-                .aggregations("tier_dist", a -> a.terms(t -> t.field("tier.keyword").size(10)))
+                .aggregations("tier_dist", a -> a.terms(t -> t.field("tier").size(10)))
                 .aggregations("top_files", a -> a.terms(t -> t.field("filePath.keyword").size(20)))
-                .aggregations("tool_usage", a -> a.terms(t -> t.field("toolName.keyword").size(20)))
-                .aggregations("tag_trends", a -> a.terms(t -> t.field("tags.keyword").size(20)))
+                .aggregations("tool_usage", a -> a.terms(t -> t.field("toolName").size(20)))
+                .aggregations("tag_trends", a -> a.terms(t -> t.field("tags").size(20)))
                 .aggregations("daily_trend", a -> a.dateHistogram(dh -> dh
                     .field("timestamp")
                     .calendarInterval(co.elastic.clients.elasticsearch._types.aggregations.CalendarInterval.Day)

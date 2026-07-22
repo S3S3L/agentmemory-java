@@ -22,6 +22,7 @@ public class TokenBudget {
         for (int i = 0; i < results.size(); i++) {
             var r = results.get(i);
             sb.append("## Memory ").append(i + 1).append(" [").append(r.tier()).append("]\n");
+            if (r.id() != null) sb.append("- ID: ").append(r.id()).append("\n");
             if (r.sessionId() != null) sb.append("- Session: ").append(r.sessionId()).append("\n");
             if (r.toolName() != null) sb.append("- Tool: ").append(r.toolName()).append("\n");
             if (r.filePath() != null) sb.append("- File: ").append(r.filePath()).append("\n");
@@ -50,6 +51,7 @@ public class TokenBudget {
         for (int i = 0; i < results.size(); i++) {
             var r = results.get(i);
             sb.append("## Memory ").append(i + 1).append(" [").append(r.tier()).append("]\n");
+            if (r.id() != null) sb.append("- ID: ").append(r.id()).append("\n");
             sb.append("- Relevance: ").append(String.format("%.2f", r.rerankScore()));
             if (r.score() > 0 && r.rerankScore() == 0) {
                 sb.append(" (raw: ").append(String.format("%.2f", r.score())).append(")");

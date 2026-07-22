@@ -19,10 +19,15 @@ import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
 import co.elastic.clients.elasticsearch.ElasticsearchClient;
+import co.elastic.clients.elasticsearch._types.ElasticsearchException;
+import co.elastic.clients.elasticsearch._types.ErrorCause;
+import co.elastic.clients.elasticsearch._types.ErrorResponse;
 import co.elastic.clients.elasticsearch.core.GetResponse;
 import co.elastic.clients.elasticsearch.core.IndexResponse;
 import co.elastic.clients.elasticsearch.core.UpdateRequest;
 import co.elastic.clients.elasticsearch.core.UpdateResponse;
+import co.elastic.clients.elasticsearch.indices.ElasticsearchIndicesClient;
+import co.elastic.clients.transport.endpoints.BooleanResponse;
 import co.elastic.clients.util.ObjectBuilder;
 
 @SuppressWarnings({"unchecked", "rawtypes"})
@@ -97,6 +102,37 @@ class LifecycleCoordinatorTest {
         boolean result = coordinator.acquireLease("test-job", Duration.ofMinutes(10));
 
         assertTrue(result, "Expected acquireLease to return true when taking over expired lease");
+        verify(client).index(any(Function.class));
+    }
+
+    @Test
+    void acquireLease_self_heals_when_index_missing() throws Exception {
+        ErrorCause errorCause = new ErrorCause.Builder()
+                .type("index_not_found_exception")
+                .reason("no such index [memory-lifecycle-state]")
+                .build();
+        ErrorResponse errorResponse = new ErrorResponse.Builder()
+                .status(404)
+                .error(errorCause)
+                .build();
+        ElasticsearchException indexNotFound =
+                new ElasticsearchException("es/get", errorResponse);
+
+        when(client.get(any(Function.class), eq(Map.class))).thenThrow(indexNotFound);
+
+        ElasticsearchIndicesClient indicesClient = mock(ElasticsearchIndicesClient.class);
+        when(client.indices()).thenReturn(indicesClient);
+        BooleanResponse notExists = mock(BooleanResponse.class);
+        when(notExists.value()).thenReturn(false);
+        when(indicesClient.exists(any(Function.class))).thenReturn(notExists);
+
+        IndexResponse indexResponse = mock(IndexResponse.class);
+        when(client.index(any(Function.class))).thenReturn(indexResponse);
+
+        boolean result = coordinator.acquireLease("test-job", Duration.ofMinutes(10));
+
+        assertTrue(result, "Expected acquireLease to create the missing index and acquire the lease");
+        verify(indicesClient).create(any(Function.class));
         verify(client).index(any(Function.class));
     }
 

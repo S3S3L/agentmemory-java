@@ -19,9 +19,13 @@ import org.junit.jupiter.api.Test;
 import com.agentmemory.config.MemoryProperties;
 import com.agentmemory.model.MemorySearchRequest;
 import com.agentmemory.model.MemoryTier;
+import com.agentmemory.model.SessionRecord;
 import com.agentmemory.service.embed.EmbeddingService;
 
 import co.elastic.clients.elasticsearch.ElasticsearchClient;
+import co.elastic.clients.elasticsearch._types.Result;
+import co.elastic.clients.elasticsearch._types.mapping.FieldType;
+import co.elastic.clients.elasticsearch.core.DeleteResponse;
 import co.elastic.clients.elasticsearch.core.SearchRequest;
 import co.elastic.clients.elasticsearch.core.SearchResponse;
 import co.elastic.clients.elasticsearch.core.search.Hit;
@@ -29,6 +33,83 @@ import co.elastic.clients.elasticsearch.core.search.HitsMetadata;
 import co.elastic.clients.util.ObjectBuilder;
 
 class ElasticsearchServiceTest {
+
+    @Test
+    void deleteMemory_returnsDeletedWhenElasticsearchDeletesDocument() throws IOException {
+        ElasticsearchClient client = mock(ElasticsearchClient.class);
+        DeleteResponse response = mock(DeleteResponse.class);
+        when(response.result()).thenReturn(Result.Deleted);
+        when(client.delete(anyDeleteRequestBuilder())).thenReturn(response);
+
+        ElasticsearchService service = new ElasticsearchService(
+            client, new MemoryProperties(), mock(EmbeddingService.class), "test-observations");
+
+        assertEquals(ElasticsearchService.DeleteResult.DELETED, service.deleteMemory("memory-1"));
+    }
+
+    @Test
+    void deleteMemory_returnsNotFoundWhenDocumentDoesNotExist() throws IOException {
+        ElasticsearchClient client = mock(ElasticsearchClient.class);
+        DeleteResponse response = mock(DeleteResponse.class);
+        when(response.result()).thenReturn(Result.NotFound);
+        when(client.delete(anyDeleteRequestBuilder())).thenReturn(response);
+
+        ElasticsearchService service = new ElasticsearchService(
+            client, new MemoryProperties(), mock(EmbeddingService.class), "test-observations");
+
+        assertEquals(ElasticsearchService.DeleteResult.NOT_FOUND, service.deleteMemory("memory-1"));
+    }
+
+    @Test
+    void getRecentSessions_handlesIndicesWithoutStartTimeMapping() throws IOException {
+        ElasticsearchClient client = mock(ElasticsearchClient.class);
+        @SuppressWarnings("unchecked")
+        SearchResponse<SessionRecord> response = mock(SearchResponse.class);
+        @SuppressWarnings("unchecked")
+        HitsMetadata<SessionRecord> hits = mock(HitsMetadata.class);
+        when(response.hits()).thenReturn(hits);
+        when(hits.hits()).thenReturn(List.of());
+
+        when(client.search(anySearchRequestBuilder(), eq(SessionRecord.class))).thenAnswer(invocation -> {
+            @SuppressWarnings("unchecked")
+            Function<SearchRequest.Builder, ObjectBuilder<SearchRequest>> fn = invocation.getArgument(0);
+            SearchRequest request = fn.apply(new SearchRequest.Builder()).build();
+
+            assertEquals("startTime", request.sort().getFirst().field().field());
+            assertEquals(FieldType.Date, request.sort().getFirst().field().unmappedType());
+            return response;
+        });
+
+        ElasticsearchService service = new ElasticsearchService(
+            client, new MemoryProperties(), mock(EmbeddingService.class), "test-observations");
+
+        assertEquals(List.of(), service.getRecentSessions(20));
+    }
+
+    @Test
+    void getPatternAggregations_usesMappedKeywordFields() throws IOException {
+        ElasticsearchClient client = mock(ElasticsearchClient.class);
+        @SuppressWarnings("unchecked")
+        SearchResponse<Void> response = mock(SearchResponse.class);
+        when(response.aggregations()).thenReturn(Map.of());
+
+        when(client.search(anySearchRequestBuilder(), eq(Void.class))).thenAnswer(invocation -> {
+            @SuppressWarnings("unchecked")
+            Function<SearchRequest.Builder, ObjectBuilder<SearchRequest>> fn = invocation.getArgument(0);
+            SearchRequest request = fn.apply(new SearchRequest.Builder()).build();
+
+            assertEquals("toolName",
+                request.aggregations().get("tool_usage").terms().field());
+            assertEquals("tags",
+                request.aggregations().get("top_tags").terms().field());
+            return response;
+        });
+
+        ElasticsearchService service = new ElasticsearchService(
+            client, new MemoryProperties(), mock(EmbeddingService.class), "test-observations");
+
+        assertEquals(Map.of("aggregations", Map.of()), service.getPatternAggregations());
+    }
 
     @Test
     void search_fallsBackToBm25WhenVectorSearchFails() throws IOException {
@@ -92,6 +173,12 @@ class ElasticsearchServiceTest {
 
     @SuppressWarnings("unchecked")
     private static Function<SearchRequest.Builder, ObjectBuilder<SearchRequest>> anySearchRequestBuilder() {
+        return any(Function.class);
+    }
+
+    @SuppressWarnings("unchecked")
+    private static Function<co.elastic.clients.elasticsearch.core.DeleteRequest.Builder,
+            ObjectBuilder<co.elastic.clients.elasticsearch.core.DeleteRequest>> anyDeleteRequestBuilder() {
         return any(Function.class);
     }
 

@@ -3,12 +3,14 @@ package com.agentmemory.service;
 import co.elastic.clients.elasticsearch.ElasticsearchClient;
 import co.elastic.clients.elasticsearch._types.ElasticsearchException;
 import co.elastic.clients.elasticsearch._types.OpType;
+import co.elastic.clients.elasticsearch.core.GetResponse;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
 import com.agentmemory.model.LifecycleJobState;
 
+import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.time.Duration;
 import java.time.Instant;
@@ -33,6 +35,21 @@ public class LifecycleCoordinator {
 
     static final String LIFECYCLE_INDEX = "memory-lifecycle-state";
 
+    private static final String LIFECYCLE_INDEX_MAPPING = """
+            {
+              "settings": {"number_of_shards": 1, "number_of_replicas": 0},
+              "mappings": {
+                "properties": {
+                  "jobName":        {"type": "keyword"},
+                  "leaseOwner":     {"type": "keyword"},
+                  "leaseUntil":     {"type": "long"},
+                  "lastStartedAt":  {"type": "long"},
+                  "lastCompletedAt":{"type": "long"},
+                  "lastError":      {"type": "text"}
+                }
+              }
+            }""";
+
     private final ElasticsearchClient client;
     final String instanceId = UUID.randomUUID().toString();
 
@@ -56,7 +73,15 @@ public class LifecycleCoordinator {
             Instant now = Instant.now();
             Instant leaseExpiry = now.plus(ttl);
 
-            var existing = client.get(g -> g.index(LIFECYCLE_INDEX).id(jobName), Map.class);
+            GetResponse<Map> existing;
+            try {
+                existing = client.get(g -> g.index(LIFECYCLE_INDEX).id(jobName), Map.class);
+            } catch (ElasticsearchException e) {
+                if (!isIndexNotFound(e)) throw e;
+                // Index missing (never created, or dropped out from under us) — self-heal and retry.
+                ensureIndexExists();
+                return tryCreate(jobName, leaseExpiry, now);
+            }
 
             if (!existing.found()) {
                 return tryCreate(jobName, leaseExpiry, now);
@@ -172,6 +197,30 @@ public class LifecycleCoordinator {
             log.warn("Failed to get job state for {}: {}", jobName, e.getMessage());
             return Optional.empty();
         }
+    }
+
+    /**
+     * Create the lifecycle state index if it doesn't already exist. Safe to call
+     * concurrently from multiple instances — a racing "already exists" create is ignored.
+     */
+    public void ensureIndexExists() throws IOException {
+        boolean exists = client.indices().exists(e -> e.index(LIFECYCLE_INDEX)).value();
+        if (exists) return;
+
+        log.info("Creating lifecycle state index: {}", LIFECYCLE_INDEX);
+        try {
+            client.indices().create(c -> c
+                    .index(LIFECYCLE_INDEX)
+                    .withJson(new ByteArrayInputStream(LIFECYCLE_INDEX_MAPPING.getBytes())));
+            log.info("Lifecycle state index created: {}", LIFECYCLE_INDEX);
+        } catch (ElasticsearchException e) {
+            if (e.status() != 400) throw e; // 400 == another instance created it concurrently
+        }
+    }
+
+    private boolean isIndexNotFound(ElasticsearchException e) {
+        return e.status() == 404 && e.error() != null
+                && "index_not_found_exception".equals(e.error().type());
     }
 
     // ---- private helpers ----

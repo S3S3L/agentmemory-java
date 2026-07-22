@@ -525,13 +525,13 @@ public class MemoryConsolidationService {
 
     // --- ES query helpers ---
 
-    /** One page of hits for a tier, sorted by _id for stable search_after cursor. */
+    /** One page of hits for a tier, sorted by id for stable search_after cursor. */
     private List<Hit<Map>> searchByTierPage(String tier, int size, List<FieldValue> searchAfter)
             throws java.io.IOException {
         SearchResponse<Map> response = esClient.search(s -> {
             var q = s.index(OBS_INDEX)
                 .size(size)
-                .sort(sort -> sort.field(f -> f.field("_id").order(SortOrder.Asc)))
+                .sort(sort -> sort.field(f -> f.field("id").order(SortOrder.Asc)))
                 .query(query -> query.term(t -> t.field("tier").value(tier)));
             if (searchAfter != null && !searchAfter.isEmpty()) {
                 q = q.searchAfter(searchAfter);
@@ -541,13 +541,13 @@ public class MemoryConsolidationService {
         return (List<Hit<Map>>) (List<?>) response.hits().hits();
     }
 
-    /** One page of all observations, sorted by _id for stable search_after cursor. */
+    /** One page of all observations, sorted by id for stable search_after cursor. */
     private List<Hit<Map>> getAllMemoriesPage(int size, List<FieldValue> searchAfter)
             throws java.io.IOException {
         SearchResponse<Map> response = esClient.search(s -> {
             var q = s.index(OBS_INDEX)
                 .size(size)
-                .sort(sort -> sort.field(f -> f.field("_id").order(SortOrder.Asc)));
+                .sort(sort -> sort.field(f -> f.field("id").order(SortOrder.Asc)));
             if (searchAfter != null && !searchAfter.isEmpty()) {
                 q = q.searchAfter(searchAfter);
             }

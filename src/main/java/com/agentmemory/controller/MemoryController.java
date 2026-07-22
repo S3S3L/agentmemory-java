@@ -126,7 +126,13 @@ public class MemoryController {
 
     @DeleteMapping("/{id}")
     public ResponseEntity<?> forget(@PathVariable String id) throws IOException {
-        esService.deleteMemory(id);
-        return ResponseEntity.ok(Map.of("status", "deleted", "id", id));
+        ElasticsearchService.DeleteResult result = esService.deleteMemory(id);
+        Map<String, String> body = Map.of(
+            "status", result == ElasticsearchService.DeleteResult.DELETED ? "deleted" : "not_found",
+            "id", id
+        );
+        return result == ElasticsearchService.DeleteResult.DELETED
+            ? ResponseEntity.ok(body)
+            : ResponseEntity.status(404).body(body);
     }
 }
